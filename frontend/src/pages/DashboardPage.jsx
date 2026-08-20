@@ -100,7 +100,7 @@ export const DashboardPage = () => {
           </p>
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <Button
-              variant="primary"
+              variant="secondary"
               size="md"
               icon={PlusCircle}
               onClick={() => navigate('/upload')}
