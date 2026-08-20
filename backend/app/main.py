@@ -59,6 +59,12 @@ async def startup_event():
     logger.info(f"Allowed CORS Origins: {allowed_origins}")
 
 
+@app.get("/", tags=["Health"], summary="Root endpoint")
+@app.head("/", tags=["Health"], summary="Root HEAD endpoint")
+async def root():
+    return {"status": "healthy", "service": "Meeting Summarizer API"}
+
+
 @app.get("/health", tags=["Health"], summary="Liveness & health check")
 async def health_check():
     """
