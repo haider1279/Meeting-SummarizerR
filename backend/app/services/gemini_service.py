@@ -264,6 +264,114 @@ def _call_gemini_with_retry(client: genai.Client, uploaded_file) -> dict:
             raise ValueError(f"Could not parse Gemini response as JSON: {e}")
 
 
+TRANSCRIPT_ANALYSIS_PROMPT = """
+You are a professional meeting analyst. You will receive the full transcript of a business meeting.
+
+Your job is to:
+1. Review the entire transcript carefully
+2. Analyze the meeting content and extract structured information
+
+CRITICAL RULES — follow these exactly:
+- NEVER invent, assume, or hallucinate any people, names, deadlines, decisions, or tasks not explicitly mentioned in the text.
+- If you cannot identify who is responsible for an action item, use exactly: "Not specified"
+- If no deadline is mentioned for an action item, use exactly: "No deadline specified"
+- If a section has nothing (e.g., no decisions were made), return an empty list [] for that field.
+- Priority must be one of: "High", "Medium", "Low", or "Not specified" — nothing else.
+
+Your response must be a JSON object matching exactly the schema provided. No extra commentary, no markdown fences.
+"""
+
+
+def analyze_meeting_transcript(transcript_text: str, title: Optional[str] = None) -> tuple[str, dict]:
+    """
+    Analyze a meeting from its text transcript (e.g. Zoom WebVTT transcript) with Gemini AI.
+    Reuses the exact same structured schema, prompt rules, and Pydantic validation.
+
+    Returns:
+        (transcript: str, analysis: dict)
+    """
+    if not transcript_text or not transcript_text.strip():
+        raise ValueError("Cannot analyze an empty meeting transcript.")
+
+    client = _get_client()
+    logger.info(f"Calling Gemini model for transcript analysis ({len(transcript_text)} chars): {settings.GEMINI_MODEL}")
+
+    # Prompt with transcript
+    title_prefix = f"Meeting Title: {title}\n\n" if title else ""
+    full_prompt = f"{TRANSCRIPT_ANALYSIS_PROMPT}\n\n{title_prefix}--- TRANSCRIPT START ---\n{transcript_text}\n--- TRANSCRIPT END ---"
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "A concise executive summary of the meeting (2-4 sentences)"
+            },
+            "key_points": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Main discussion points from the meeting"
+            },
+            "decisions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Decisions that were made during the meeting"
+            },
+            "action_items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string"},
+                        "assignee": {"type": "string"},
+                        "deadline": {"type": "string"},
+                        "priority": {"type": "string"}
+                    },
+                    "required": ["task", "assignee", "deadline", "priority"]
+                },
+                "description": "Action items with owner, deadline, and priority"
+            },
+            "unresolved_issues": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Topics or issues that were raised but not resolved"
+            },
+            "important_topics": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Important topics or themes discussed in the meeting"
+            }
+        },
+        "required": ["summary", "key_points", "decisions", "action_items", "unresolved_issues", "important_topics"]
+    }
+
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        wait=wait_exponential(multiplier=2, min=4, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    def _call_text_gemini():
+        response = client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=[full_prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+            ),
+        )
+        raw_text = response.text or ""
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            logger.warning("Gemini returned wrapped JSON. Attempting recovery...")
+            cleaned = _strip_json_fences(raw_text)
+            return json.loads(cleaned)
+
+    analysis_dict = _call_text_gemini()
+    return transcript_text, analysis_dict
+
+
 def validate_analysis(raw_dict: dict) -> GeminiAnalysis:
     """
     Validate that Gemini's response matches our expected schema using Pydantic.

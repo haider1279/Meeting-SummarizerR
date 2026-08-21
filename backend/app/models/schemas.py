@@ -46,6 +46,8 @@ class MeetingResponse(BaseModel):
     participants: Optional[str] = None
     audio_file_path: Optional[str] = None
     status: str
+    source: Optional[str] = "upload"
+    zoom_meeting_uuid: Optional[str] = None
     transcript: Optional[str] = None
     summary: Optional[str] = None
     key_points: Optional[list] = None
@@ -146,3 +148,37 @@ class SuccessResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+# ============================================================
+# Zoom schemas
+# ============================================================
+
+class ZoomStatusResponse(BaseModel):
+    configured: bool
+    connected: bool
+    email: Optional[str] = None
+    status: str
+    connected_at: Optional[str] = None
+
+
+class ZoomRecordingItem(BaseModel):
+    uuid: str
+    id: str
+    topic: str
+    start_time: str
+    duration: int
+    has_transcript: bool
+    has_audio: bool
+    can_summarize: bool
+    already_imported: bool
+    imported_meeting_id: Optional[str] = None
+    recording_count: int
+
+
+class ZoomRecordingsResponse(BaseModel):
+    recordings: list[ZoomRecordingItem]
+    next_page_token: Optional[str] = ""
+    total_records: Optional[int] = 0
+    from_date: Optional[str] = Field(None, alias="from")
+    to_date: Optional[str] = Field(None, alias="to")

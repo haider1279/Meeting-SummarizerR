@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import meetings, action_items
+from app.routers import meetings, action_items, zoom
 
 # Configure server-side logging
 logging.basicConfig(
@@ -32,9 +32,10 @@ app = FastAPI(
 )
 
 # Configure CORS origins
-# Allow configured frontend URL as well as standard local development ports
+# Allow configured frontend URL as well as standard local development ports and production Vercel domain
 origins = [
     settings.FRONTEND_URL,
+    "https://meeting-summarizer-r.vercel.app",
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
@@ -57,6 +58,10 @@ async def startup_event():
     logger.info("Meeting Summarizer API starting up...")
     logger.info(f"Using Gemini Model: {settings.GEMINI_MODEL}")
     logger.info(f"Allowed CORS Origins: {allowed_origins}")
+    if settings.is_zoom_configured:
+        logger.info(f"Zoom OAuth Configured (Redirect URI: {settings.ZOOM_REDIRECT_URI})")
+    else:
+        logger.info("Zoom OAuth not configured yet (ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET empty).")
 
 
 @app.get("/", tags=["Health"], summary="Root endpoint")
@@ -81,6 +86,8 @@ async def health_check():
 # Include sub-routers
 app.include_router(meetings.router)
 app.include_router(action_items.router)
+# Exact OAuth redirect URI: /api/zoom/callback
+app.include_router(zoom.router, prefix="/api/zoom")
 
 
 @app.exception_handler(Exception)

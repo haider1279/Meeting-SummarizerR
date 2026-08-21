@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS public.meetings (
     participants        text,                    -- simple comma-separated text
     audio_file_path     text,                    -- path inside Supabase Storage bucket
     status              text NOT NULL DEFAULT 'pending',  -- pending | processing | completed | failed
+    source              text DEFAULT 'upload',   -- 'upload' | 'zoom'
+    zoom_meeting_uuid   text,                    -- Zoom meeting UUID for duplicate protection
     transcript          text,
     summary             text,
     key_points          jsonb,                   -- array of strings
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS public.meetings (
 -- Speed up queries that filter by user (very common operation)
 CREATE INDEX IF NOT EXISTS idx_meetings_user_id ON public.meetings(user_id);
 CREATE INDEX IF NOT EXISTS idx_meetings_created_at ON public.meetings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_meetings_user_zoom_uuid ON public.meetings(user_id, zoom_meeting_uuid);
 
 -- Enable RLS
 ALTER TABLE public.meetings ENABLE ROW LEVEL SECURITY;
@@ -230,3 +233,36 @@ CREATE POLICY "Users can delete own audio files"
         bucket_id = 'meeting-audio'
         AND (storage.foldername(name))[1] = auth.uid()::text
     );
+
+
+-- ============================================================
+-- STEP 7: zoom_connections table
+-- Stores encrypted OAuth tokens and status per user for Zoom integration.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.zoom_connections (
+    id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 uuid NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
+    zoom_user_id            text NOT NULL,
+    zoom_email              text,
+    encrypted_access_token  text NOT NULL,
+    encrypted_refresh_token text NOT NULL,
+    expires_at              timestamptz NOT NULL,
+    scopes                  text,
+    status                  text NOT NULL DEFAULT 'connected', -- 'connected' | 'needs_reconnect' | 'disconnected'
+    created_at              timestamptz DEFAULT now(),
+    updated_at              timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_zoom_connections_user_id ON public.zoom_connections(user_id);
+
+ALTER TABLE public.zoom_connections ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can read own zoom connection"
+    ON public.zoom_connections
+    FOR SELECT
+    USING (auth.uid() = user_id);
+
+CREATE OR REPLACE TRIGGER set_zoom_connections_updated_at
+    BEFORE UPDATE ON public.zoom_connections
+    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

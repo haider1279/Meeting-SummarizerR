@@ -69,4 +69,12 @@ export const api = {
   // Action Items
   getActionItems: (params) => apiClient.get('/action-items', { params }),
   updateActionItem: (id, data) => apiClient.put(`/action-items/${id}`, data),
+
+  // Zoom Integration
+  getZoomStatus: () => apiClient.get('/api/zoom/status'),
+  getZoomConnectUrl: () => apiClient.get('/api/zoom/connect'),
+  disconnectZoom: () => apiClient.post('/api/zoom/disconnect'),
+  getZoomRecordings: (params) => apiClient.get('/api/zoom/recordings', { params }),
+  summarizeZoomRecording: (meetingUuid) =>
+    apiClient.post(`/api/zoom/recordings/${encodeURIComponent(meetingUuid)}/summarize`),
 };

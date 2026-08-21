@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   User, 
   Mail, 
@@ -8,15 +8,22 @@ import {
   ShieldCheck, 
   KeyRound, 
   CheckCircle2, 
-  AlertCircle 
+  AlertCircle,
+  Video,
+  ExternalLink,
+  Unlink,
+  Radio,
+  RefreshCw
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { api } from '../lib/apiClient';
 import { Button } from '../components/Button';
 import { useToast } from '../components/Toast';
 
 export const SettingsPage = () => {
   const { user, signOut, updatePassword } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const { showSuccess, showError } = useToast();
 
   const [newPassword, setNewPassword] = useState('');
@@ -24,6 +31,83 @@ export const SettingsPage = () => {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState('');
+
+  // Zoom Integration State
+  const [zoomStatus, setZoomStatus] = useState({
+    configured: true,
+    connected: false,
+    email: null,
+    status: 'loading',
+  });
+  const [zoomLoading, setZoomLoading] = useState(true);
+  const [zoomActionLoading, setZoomActionLoading] = useState(false);
+
+  // Fetch Zoom Status
+  const fetchZoomStatus = async () => {
+    try {
+      setZoomLoading(true);
+      const res = await api.getZoomStatus();
+      setZoomStatus(res.data);
+    } catch (err) {
+      console.error('Error checking Zoom connection status:', err);
+    } finally {
+      setZoomLoading(false);
+    }
+  };
+
+  // Check URL params from OAuth callback (?zoom=connected or ?zoom=error)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const zoomParam = params.get('zoom');
+    const reasonParam = params.get('reason');
+
+    if (zoomParam === 'connected') {
+      showSuccess('Your Zoom account has been connected successfully!', 'Zoom Connected');
+      fetchZoomStatus();
+      // Remove query parameters from URL without reloading
+      navigate(location.pathname, { replace: true });
+    } else if (zoomParam === 'error') {
+      const reasonText = reasonParam ? reasonParam.replace(/_/g, ' ') : 'Authorization was canceled or failed.';
+      showError(`Could not connect Zoom account: ${reasonText}`, 'Zoom Error');
+      fetchZoomStatus();
+      navigate(location.pathname, { replace: true });
+    } else {
+      fetchZoomStatus();
+    }
+  }, [location.search]);
+
+  // Connect Zoom Handler
+  const handleConnectZoom = async () => {
+    setZoomActionLoading(true);
+    try {
+      const res = await api.getZoomConnectUrl();
+      if (res.data?.url) {
+        window.location.href = res.data.url;
+      } else {
+        showError('Could not obtain Zoom authorization URL.');
+        setZoomActionLoading(false);
+      }
+    } catch (err) {
+      console.error('Connect Zoom error:', err);
+      showError(err.userMessage || 'Failed to start Zoom connection.');
+      setZoomActionLoading(false);
+    }
+  };
+
+  // Disconnect Zoom Handler
+  const handleDisconnectZoom = async () => {
+    setZoomActionLoading(true);
+    try {
+      await api.disconnectZoom();
+      showSuccess('Zoom account disconnected successfully.');
+      await fetchZoomStatus();
+    } catch (err) {
+      console.error('Disconnect Zoom error:', err);
+      showError(err.userMessage || 'Failed to disconnect Zoom account.');
+    } finally {
+      setZoomActionLoading(false);
+    }
+  };
 
   const handlePasswordChange = async (e) => {
     e.preventDefault();
@@ -103,6 +187,93 @@ export const SettingsPage = () => {
             <span className="text-xs font-mono text-slate-600 break-all">{user?.id}</span>
           </div>
         </div>
+      </div>
+
+      {/* Zoom Integration Card */}
+      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/80 shadow-xs space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
+              <Video className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-slate-900">Zoom Integration</h3>
+                {zoomStatus.connected && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                    Connected
+                  </span>
+                )}
+                {!zoomStatus.connected && !zoomLoading && (
+                  <span className="inline-flex items-center text-[11px] font-medium text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-full">
+                    Not Connected
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Authorize your Zoom account to import and summarize cloud recordings
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-start sm:self-center">
+            {zoomLoading ? (
+              <span className="text-xs text-slate-400">Checking status...</span>
+            ) : zoomStatus.connected ? (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={ExternalLink}
+                  onClick={() => navigate('/upload?tab=zoom')}
+                >
+                  View Zoom Recordings
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  icon={Unlink}
+                  onClick={handleDisconnectZoom}
+                  loading={zoomActionLoading}
+                >
+                  Disconnect
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="primary"
+                size="sm"
+                icon={Video}
+                onClick={handleConnectZoom}
+                loading={zoomActionLoading}
+                className="bg-blue-600 hover:bg-blue-700 focus:ring-blue-500 shadow-blue-200"
+              >
+                Connect Zoom
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {zoomStatus.connected && (
+          <div className="p-4 rounded-2xl bg-blue-50/50 border border-blue-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="space-y-1">
+              <span className="text-slate-500 font-medium block">Authorized Zoom Account:</span>
+              <span className="text-slate-900 font-semibold">{zoomStatus.email || 'Zoom User'}</span>
+            </div>
+            <div className="text-slate-500">
+              <span>Ready to import recordings from your Zoom Cloud.</span>
+            </div>
+          </div>
+        )}
+
+        {!zoomStatus.connected && !zoomLoading && (
+          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100 text-xs text-slate-600 leading-relaxed">
+            <p>
+              Connecting Zoom will allow Meeting Summarizer to retrieve your cloud meeting transcripts and audio files for AI analysis. You can disconnect at any time.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Password Management */}

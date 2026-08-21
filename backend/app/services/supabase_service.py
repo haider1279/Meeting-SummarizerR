@@ -15,16 +15,26 @@ import logging
 import uuid
 from typing import Optional
 
-from supabase import create_client
+from supabase import create_client, ClientOptions
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 
+# The supabase-py storage sub-client uses httpx internally and defaults to a
+# 20-second timeout (storage3.constants.DEFAULT_TIMEOUT = 20).  Large audio
+# files (tens of megabytes) can take longer than 20 s to transfer to Supabase
+# Storage, causing an httpx.ReadTimeout that propagates as a 500 error on the
+# upload endpoint.  We override it with 120 s, matching the Axios timeout that
+# is already configured on the frontend.
+_STORAGE_UPLOAD_TIMEOUT_SECONDS = 120
+
+
 def get_client():
-    """Create and return a fresh Supabase client."""
-    return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+    """Create and return a fresh Supabase client with an extended storage timeout."""
+    options = ClientOptions(storage_client_timeout=_STORAGE_UPLOAD_TIMEOUT_SECONDS)
+    return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY, options)
 
 
 # ============================================================
@@ -75,7 +85,8 @@ def delete_audio_from_storage(storage_path: str) -> None:
 # ============================================================
 
 def create_meeting(user_id: str, title: str, meeting_date: Optional[str],
-                   participants: Optional[str], audio_file_path: str) -> dict:
+                   participants: Optional[str], audio_file_path: Optional[str] = None,
+                   source: str = "upload", zoom_meeting_uuid: Optional[str] = None) -> dict:
     """Insert a new meeting row and return it."""
     supabase = get_client()
     data = {
@@ -84,6 +95,8 @@ def create_meeting(user_id: str, title: str, meeting_date: Optional[str],
         "meeting_date": meeting_date,
         "participants": participants,
         "audio_file_path": audio_file_path,
+        "source": source,
+        "zoom_meeting_uuid": zoom_meeting_uuid,
         "status": "pending",
     }
     result = supabase.table("meetings").insert(data).execute()
@@ -110,7 +123,7 @@ def list_meetings(user_id: str, search: Optional[str] = None,
     supabase = get_client()
     query = (
         supabase.table("meetings")
-        .select("id, title, meeting_date, status, created_at")
+        .select("id, title, meeting_date, status, created_at, source")
         .eq("user_id", user_id)
     )
 
@@ -323,3 +336,94 @@ def update_action_item(item_id: str, user_id: str, fields: dict) -> Optional[dic
     if result.data:
         return result.data[0]
     return None
+
+
+# ============================================================
+# Zoom connection & integration operations
+# ============================================================
+
+def get_meeting_by_zoom_uuid(user_id: str, zoom_meeting_uuid: str) -> Optional[dict]:
+    """Fetch an existing meeting by Zoom UUID for duplicate checking."""
+    if not zoom_meeting_uuid:
+        return None
+    supabase = get_client()
+    result = (
+        supabase.table("meetings")
+        .select("id, title, status, created_at, zoom_meeting_uuid")
+        .eq("user_id", user_id)
+        .eq("zoom_meeting_uuid", zoom_meeting_uuid)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def get_zoom_connection(user_id: str) -> Optional[dict]:
+    """Fetch Zoom connection record for a user (scoped to user_id)."""
+    supabase = get_client()
+    result = (
+        supabase.table("zoom_connections")
+        .select("*")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def save_zoom_connection(
+    user_id: str,
+    zoom_user_id: str,
+    zoom_email: Optional[str],
+    encrypted_access_token: str,
+    encrypted_refresh_token: str,
+    expires_at: str,
+    scopes: Optional[str] = None,
+) -> dict:
+    """
+    Insert or update (upsert) a user's Zoom connection.
+    Guarantees one Zoom connection row per user.
+    """
+    supabase = get_client()
+    data = {
+        "user_id": user_id,
+        "zoom_user_id": zoom_user_id,
+        "zoom_email": zoom_email,
+        "encrypted_access_token": encrypted_access_token,
+        "encrypted_refresh_token": encrypted_refresh_token,
+        "expires_at": expires_at,
+        "scopes": scopes,
+        "status": "connected",
+    }
+    result = supabase.table("zoom_connections").upsert(data, on_conflict="user_id").execute()
+    return result.data[0] if result.data else data
+
+
+def update_zoom_tokens(
+    user_id: str,
+    encrypted_access_token: str,
+    encrypted_refresh_token: str,
+    expires_at: str,
+) -> None:
+    """Update refreshed Zoom tokens and expiry in database."""
+    supabase = get_client()
+    data = {
+        "encrypted_access_token": encrypted_access_token,
+        "encrypted_refresh_token": encrypted_refresh_token,
+        "expires_at": expires_at,
+        "status": "connected",
+    }
+    supabase.table("zoom_connections").update(data).eq("user_id", user_id).execute()
+
+
+def update_zoom_connection_status(user_id: str, status: str) -> None:
+    """Update Zoom connection status (e.g. 'needs_reconnect' or 'disconnected')."""
+    supabase = get_client()
+    supabase.table("zoom_connections").update({"status": status}).eq("user_id", user_id).execute()
+
+
+def delete_zoom_connection(user_id: str) -> bool:
+    """Delete a user's Zoom connection upon disconnect."""
+    supabase = get_client()
+    result = supabase.table("zoom_connections").delete().eq("user_id", user_id).execute()
+    return len(result.data) > 0

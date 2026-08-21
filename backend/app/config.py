@@ -34,6 +34,25 @@ class Settings:
         # Maximum audio file size the backend will accept (100 MB in bytes)
         self.MAX_AUDIO_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 
+        # Zoom Integration (Optional during local dev / until configured in Render)
+        self.ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
+        self.ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
+        self.ZOOM_REDIRECT_URI = os.getenv(
+            "ZOOM_REDIRECT_URI",
+            "https://meeting-summarizer-rfrr.onrender.com/api/zoom/callback"
+        )
+        self.ZOOM_TOKEN_ENCRYPTION_KEY = os.getenv("ZOOM_TOKEN_ENCRYPTION_KEY", "")
+        # State signing secret (falls back to Supabase service role key or Zoom secret if not set)
+        self.STATE_SECRET_KEY = os.getenv(
+            "STATE_SECRET_KEY",
+            self.SUPABASE_SERVICE_ROLE_KEY or "fallback-secret-for-state-signing"
+        )
+
+    @property
+    def is_zoom_configured(self) -> bool:
+        """Check if minimum required Zoom OAuth configuration is present."""
+        return bool(self.ZOOM_CLIENT_ID and self.ZOOM_CLIENT_SECRET)
+
     @staticmethod
     def _require(key: str) -> str:
         """Read an env var; crash immediately with a helpful message if missing."""

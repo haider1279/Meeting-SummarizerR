@@ -18,7 +18,8 @@ import {
   X,
   Clock,
   ArrowLeft,
-  Check
+  Check,
+  Video
 } from 'lucide-react';
 import { api } from '../lib/apiClient';
 import { Button } from '../components/Button';
@@ -337,7 +338,15 @@ export const MeetingDetailPage = () => {
               {meeting?.title}
             </h1>
           )}
-          <StatusBadge status={meeting?.status} />
+          <div className="flex items-center gap-2">
+            {meeting?.source === 'zoom' && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                <Video className="w-3.5 h-3.5 text-blue-600" />
+                Zoom Recording
+              </span>
+            )}
+            <StatusBadge status={meeting?.status} />
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-y-2 gap-x-6 text-xs text-slate-500 pt-2 border-t border-slate-100">

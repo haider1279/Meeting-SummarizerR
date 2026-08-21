@@ -8,7 +8,8 @@ import {
   Calendar, 
   CheckSquare, 
   Layers,
-  ArrowRight
+  ArrowRight,
+  Video
 } from 'lucide-react';
 import { api } from '../lib/apiClient';
 import { Button } from '../components/Button';
@@ -142,13 +143,19 @@ export const HistoryPage = () => {
               className="p-5 sm:p-6 hover:bg-slate-50/70 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4"
             >
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-3 mb-1.5">
+                <div className="flex flex-wrap items-center gap-2.5 mb-1.5">
                   <h3
                     onClick={() => navigate(`/meetings/${meeting.id}`)}
                     className="text-base font-bold text-slate-900 hover:text-indigo-600 cursor-pointer transition-colors truncate"
                   >
                     {meeting.title}
                   </h3>
+                  {meeting.source === 'zoom' && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                      <Video className="w-3 h-3 text-blue-600" />
+                      Zoom
+                    </span>
+                  )}
                   <StatusBadge status={meeting.status} />
                 </div>
 

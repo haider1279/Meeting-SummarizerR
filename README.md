@@ -228,6 +228,10 @@ Ensure you have the following installed on your machine:
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret key for server-side operations | Supabase Dashboard > Project Settings > API > `service_role` |
 | `FRONTEND_URL` | Allowed frontend origin for CORS | `http://localhost:5173` (local) or Vercel URL (prod) |
 | `PORT` | Local port for FastAPI | `8000` |
+| `ZOOM_CLIENT_ID` | Zoom OAuth App Client ID | [Zoom Marketplace](https://marketplace.zoom.us/) |
+| `ZOOM_CLIENT_SECRET` | Zoom OAuth App Client Secret | [Zoom Marketplace](https://marketplace.zoom.us/) |
+| `ZOOM_REDIRECT_URI` | Zoom OAuth production redirect URL | `https://meeting-summarizer-rfrr.onrender.com/api/zoom/callback` |
+| `ZOOM_TOKEN_ENCRYPTION_KEY` | Fernet 32-byte url-safe base64 key | Generate via `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 
 ### Frontend (`frontend/.env.local`)
 | Variable | Description | Where to find |
@@ -235,6 +239,35 @@ Ensure you have the following installed on your machine:
 | `VITE_SUPABASE_URL` | Supabase project URL | Supabase Dashboard > Project Settings > API |
 | `VITE_SUPABASE_ANON_KEY` | Supabase public anonymous key | Supabase Dashboard > Project Settings > API > `anon` `public` |
 | `VITE_API_BASE_URL` | Backend API URL | `http://localhost:8000` (local) or Render URL (prod) |
+
+---
+
+## 📹 Zoom Cloud Recordings Integration
+
+Meeting Summarizer includes a full, production-ready integration with **Zoom OAuth 2.0** and the **Zoom Cloud Recordings API**.
+
+### How the Zoom Integration Works:
+1. **User Connects Zoom:** The user visits **Settings** or the **New Meeting** page and clicks **Connect Zoom**.
+2. **Secure OAuth 2.0:** The backend signs a short-lived cryptographic state token (HMAC-SHA256) and redirects the user to Zoom's authorization page.
+3. **Token Exchange & Encryption:** After authorization, Zoom redirects back to `https://meeting-summarizer-rfrr.onrender.com/api/zoom/callback`. The backend verifies the state, exchanges the code for access & refresh tokens, and stores them **encrypted at rest** using Fernet symmetric encryption in Supabase (`zoom_connections` table).
+4. **Cloud Recordings Browser:** The user opens the **Zoom Cloud Recordings** tab to view their recorded meetings, complete with dates, durations, and transcript availability.
+5. **Smart Transcript-First Summarization:**
+   - **Priority 1 (WebVTT Transcript):** If a transcript is available, the backend downloads and cleans the WebVTT text into readable dialogue and passes it directly to Gemini AI.
+   - **Priority 2 (Audio Recording):** If only audio is available, the backend downloads the audio and runs the full audio pipeline.
+   - **Duplicate Protection:** The app tracks `zoom_meeting_uuid` per user to prevent re-processing identical meetings.
+6. **Unified Results:** The analyzed Zoom meeting is saved directly into the normal `meetings` and `action_items` tables, making it immediately visible in your **Dashboard**, **Past Meetings**, **Action Items**, and **PDF Export**.
+
+### Verified Zoom OAuth Granular Scopes
+
+Configure these exact scopes in your Zoom App Marketplace dashboard:
+
+| Granular Scope (Current) | Classic Scope Equivalent | Purpose |
+| :--- | :--- | :--- |
+| `user:read:user` | `user:read` | Read the authorized user's profile and email |
+| `cloud_recording:read:list_user_recordings` | `recording:read` | List the user's cloud recordings |
+| `cloud_recording:read:recording` | `recording:read` | Retrieve recording files and WebVTT transcripts |
+
+> *Note: In User-level OAuth applications on Zoom Marketplace, adding `cloud_recording:read:list_user_recordings` and `cloud_recording:read:recording` grants permission to view and download recording files and transcripts.*
 
 ---
 
@@ -262,7 +295,7 @@ The application defaults to `gemini-2.5-flash` in `app/config.py` (`GEMINI_MODEL
 5. Add Environment Variables:
    - `VITE_SUPABASE_URL` = your Supabase URL
    - `VITE_SUPABASE_ANON_KEY` = your Supabase Anon Key
-   - `VITE_API_BASE_URL` = your deployed Render backend URL (e.g. `https://meeting-summarizer-api.onrender.com`)
+   - `VITE_API_BASE_URL` = `https://meeting-summarizer-rfrr.onrender.com`
 6. Click **Deploy**.
 
 ### 2. Backend → Render
@@ -277,14 +310,20 @@ The application defaults to `gemini-2.5-flash` in `app/config.py` (`GEMINI_MODEL
    - `GEMINI_API_KEY` = your Google AI Studio key
    - `SUPABASE_URL` = your Supabase project URL
    - `SUPABASE_SERVICE_ROLE_KEY` = your Supabase service role key
-   - `FRONTEND_URL` = your deployed Vercel domain (e.g. `https://meeting-summarizer.vercel.app`)
+   - `FRONTEND_URL` = `https://meeting-summarizer-r.vercel.app`
+   - `ZOOM_CLIENT_ID` = your Zoom OAuth App Client ID
+   - `ZOOM_CLIENT_SECRET` = your Zoom OAuth App Client Secret
+   - `ZOOM_REDIRECT_URI` = `https://meeting-summarizer-rfrr.onrender.com/api/zoom/callback`
+   - `ZOOM_TOKEN_ENCRYPTION_KEY` = your 32-byte Fernet base64 key
 5. Click **Create Web Service**.
 
 ---
 
 ## 🛡️ Security & Architecture Notes
 
-- **Zero-Secret Frontend:** The Gemini API key and Supabase Service Role key live exclusively in backend server memory. They are never transmitted over the wire or compiled into frontend bundles.
+- **Zero-Secret Frontend:** The Gemini API key, Zoom Client Secret, Zoom Access Tokens, and Supabase Service Role key live exclusively on the backend server.
+- **Encrypted Token Storage:** User Zoom tokens are encrypted before being saved to PostgreSQL using Fernet (`cryptography`).
+- **OAuth CSRF Security:** OAuth authorization states are cryptographically signed with HMAC-SHA256 and include an expiration timestamp to prevent CSRF attacks.
 - **Double-Layered Tenant Isolation:**
   1. Every incoming backend request authenticates the caller's JWT through Supabase Auth and binds `user_id`. All queries are scoped by `user_id`.
   2. Supabase PostgreSQL tables have Row Level Security enabled (`auth.uid() = user_id`) to prevent unauthorized access at the database layer.
