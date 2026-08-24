@@ -15,6 +15,8 @@ import { MeetingDetailPage } from './pages/MeetingDetailPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { ActionItemsPage } from './pages/ActionItemsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { LiveMeetingPage } from './pages/LiveMeetingPage';
+
 
 // Protected route wrapper
 const ProtectedRoute = ({ children }) => {
@@ -120,7 +122,28 @@ export default function App() {
         }
       />
       <Route
+        path="/live"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <LiveMeetingPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/live/:sessionId"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <LiveMeetingPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/meetings/:id"
+
         element={
           <ProtectedRoute>
             <AppLayout>

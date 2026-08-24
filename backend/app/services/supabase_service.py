@@ -427,3 +427,200 @@ def delete_zoom_connection(user_id: str) -> bool:
     supabase = get_client()
     result = supabase.table("zoom_connections").delete().eq("user_id", user_id).execute()
     return len(result.data) > 0
+
+
+def get_zoom_connection_by_zoom_user_id(zoom_user_id: str) -> Optional[dict]:
+    """
+    Find Zoom connection by Zoom's internal user ID.
+    Used by Webhooks to map an incoming RTMS event to the appropriate Supabase user.
+    """
+    if not zoom_user_id:
+        return None
+    supabase = get_client()
+    result = (
+        supabase.table("zoom_connections")
+        .select("*")
+        .eq("zoom_user_id", zoom_user_id)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+# ============================================================
+# Live Zoom RTMS session & transcript operations
+# ============================================================
+
+def create_live_session(
+    user_id: str,
+    zoom_meeting_id: str,
+    zoom_meeting_uuid: Optional[str] = None,
+    rtms_stream_id: Optional[str] = None,
+    title: str = "Live Zoom Meeting",
+) -> dict:
+    """Create a new live meeting session row."""
+    supabase = get_client()
+    data = {
+        "user_id": user_id,
+        "zoom_meeting_id": zoom_meeting_id,
+        "zoom_meeting_uuid": zoom_meeting_uuid,
+        "rtms_stream_id": rtms_stream_id,
+        "title": title,
+        "status": "waiting",
+        "current_insights": {
+            "key_points": [],
+            "decisions": [],
+            "action_items": [],
+            "open_questions": [],
+            "topics": [],
+            "risks": [],
+        },
+    }
+    result = supabase.table("live_meeting_sessions").insert(data).execute()
+    return result.data[0]
+
+
+def get_live_session(session_id: str, user_id: Optional[str] = None) -> Optional[dict]:
+    """Fetch a live session by ID, optionally scoping to a specific user."""
+    supabase = get_client()
+    query = supabase.table("live_meeting_sessions").select("*").eq("id", session_id)
+    if user_id:
+        query = query.eq("user_id", user_id)
+    result = query.limit(1).execute()
+    return result.data[0] if result.data else None
+
+
+def get_active_live_session(user_id: str) -> Optional[dict]:
+    """
+    Fetch the currently active (waiting, live, or processing) live meeting session for a user.
+    """
+    supabase = get_client()
+    result = (
+        supabase.table("live_meeting_sessions")
+        .select("*")
+        .eq("user_id", user_id)
+        .in_("status", ["waiting", "live", "processing"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def find_live_session_by_zoom_info(
+    zoom_meeting_id: Optional[str] = None,
+    zoom_meeting_uuid: Optional[str] = None,
+    rtms_stream_id: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Find an active live session matching Zoom identifiers.
+    """
+    supabase = get_client()
+    if zoom_meeting_uuid:
+        res = (
+            supabase.table("live_meeting_sessions")
+            .select("*")
+            .eq("zoom_meeting_uuid", zoom_meeting_uuid)
+            .in_("status", ["waiting", "live", "processing"])
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+
+    if rtms_stream_id:
+        res = (
+            supabase.table("live_meeting_sessions")
+            .select("*")
+            .eq("rtms_stream_id", rtms_stream_id)
+            .in_("status", ["waiting", "live", "processing"])
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+
+    if zoom_meeting_id:
+        res = (
+            supabase.table("live_meeting_sessions")
+            .select("*")
+            .eq("zoom_meeting_id", zoom_meeting_id)
+            .in_("status", ["waiting", "live", "processing"])
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+
+    return None
+
+
+def update_live_session(session_id: str, fields: dict) -> Optional[dict]:
+    """Update live session fields in database."""
+    supabase = get_client()
+    result = (
+        supabase.table("live_meeting_sessions")
+        .update(fields)
+        .eq("id", session_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def save_transcript_chunk(
+    session_id: str,
+    speaker_id: Optional[str],
+    speaker_name: str,
+    text: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    language: Optional[str] = "en",
+    sequence_number: Optional[int] = None,
+    chunk_hash: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Save a single transcript chunk with idempotency / duplicate check.
+    """
+    supabase = get_client()
+
+    # Deduplication check if hash provided
+    if chunk_hash:
+        existing = (
+            supabase.table("live_meeting_transcript_chunks")
+            .select("id")
+            .eq("session_id", session_id)
+            .eq("chunk_hash", chunk_hash)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return existing.data[0]
+
+    data = {
+        "session_id": session_id,
+        "speaker_id": speaker_id,
+        "speaker_name": speaker_name or "Speaker",
+        "text": text,
+        "start_time": str(start_time) if start_time is not None else None,
+        "end_time": str(end_time) if end_time is not None else None,
+        "language": language,
+        "sequence_number": sequence_number,
+        "chunk_hash": chunk_hash,
+    }
+    result = supabase.table("live_meeting_transcript_chunks").insert(data).execute()
+    return result.data[0] if result.data else None
+
+
+def get_live_transcript_chunks(session_id: str) -> list[dict]:
+    """Fetch all transcript chunks for a session ordered by creation / sequence."""
+    supabase = get_client()
+    result = (
+        supabase.table("live_meeting_transcript_chunks")
+        .select("*")
+        .eq("session_id", session_id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return result.data or []
+

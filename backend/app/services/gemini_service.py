@@ -378,3 +378,152 @@ def validate_analysis(raw_dict: dict) -> GeminiAnalysis:
     If fields are missing or wrong type, Pydantic will raise a ValidationError.
     """
     return GeminiAnalysis(**raw_dict)
+
+
+# ============================================================
+# Live Incremental Meeting Intelligence
+# ============================================================
+
+LIVE_INCREMENTAL_PROMPT = """
+You are an expert real-time meeting intelligence assistant.
+You are given:
+1. The CURRENT STATE of the meeting intelligence (structured summary, key points, decisions, action items, open questions, topics, risks).
+2. A NEW TRANSCRIPT CHUNK just spoken in the live meeting.
+
+Your job is to produce the UPDATED meeting intelligence state by incorporating the new transcript chunk.
+
+CRITICAL RULES:
+- INCREMENTALLY UPDATE the summary, key points, decisions, action items, open questions, topics, and risks.
+- DO NOT invent, assume, or hallucinate facts, attendees, commitments, or deadlines not supported by the transcript.
+- ACTION ITEMS: Extract clear tasks. Assign owner if mentioned (e.g. "John", "Sarah", or "Not specified"). Deadline if mentioned (or "No deadline specified"). Priority must be "High", "Medium", "Low", or "Not specified".
+- DECISIONS: Add statements only when the team explicitly agrees or makes a clear choice.
+- OPEN QUESTIONS: Add questions that are asked and left unanswered. If a previously open question is now resolved/answered by the new chunk, remove it.
+- TOPICS: Keep a concise list of high-level topics covered so far.
+- RISKS: Include any blockers, risks, or concerns mentioned.
+- If a field has no items yet, return an empty list [].
+
+Output must strictly match the JSON schema.
+"""
+
+LIVE_INSIGHTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "Rolling executive summary of the meeting up to this point (2-4 sentences)."
+        },
+        "key_points": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Key takeaways and discussion points."
+        },
+        "decisions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Agreements and decisions made by the team."
+        },
+        "action_items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"},
+                    "owner": {"type": "string"},
+                    "deadline": {"type": "string"},
+                    "priority": {"type": "string"}
+                },
+                "required": ["task", "owner", "deadline", "priority"]
+            },
+            "description": "Action items with task, owner, deadline, and priority."
+        },
+        "open_questions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Unresolved questions raised during the meeting."
+        },
+        "topics": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Main topics/themes discussed."
+        },
+        "risks": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Potential risks, roadblocks, or blockers mentioned."
+        }
+    },
+    "required": ["summary", "key_points", "decisions", "action_items", "open_questions", "topics", "risks"]
+}
+
+
+def incremental_analyze_transcript(
+    current_state: Optional[dict],
+    new_transcript_chunk: str,
+    meeting_title: Optional[str] = None,
+) -> dict:
+    """
+    Perform incremental analysis of a newly arrived transcript chunk given the current state.
+    Returns the updated structured intelligence dictionary.
+    """
+    if not new_transcript_chunk or not new_transcript_chunk.strip():
+        return current_state or {
+            "summary": "",
+            "key_points": [],
+            "decisions": [],
+            "action_items": [],
+            "open_questions": [],
+            "topics": [],
+            "risks": [],
+        }
+
+    client = _get_client()
+    title_str = f"Meeting Title: {meeting_title}\n\n" if meeting_title else ""
+    current_state_json = json.dumps(current_state or {}, indent=2)
+
+    prompt = f"""{LIVE_INCREMENTAL_PROMPT}
+
+{title_str}--- CURRENT STRUCTURED STATE ---
+{current_state_json}
+
+--- NEW TRANSCRIPT CHUNK ---
+{new_transcript_chunk}
+"""
+
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        wait=wait_exponential(multiplier=1.5, min=2, max=15),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    def _call_incremental():
+        response = client.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=LIVE_INSIGHTS_SCHEMA,
+            ),
+        )
+        raw_text = response.text or ""
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            cleaned = _strip_json_fences(raw_text)
+            return json.loads(cleaned)
+
+    try:
+        updated_insights = _call_incremental()
+        return updated_insights
+    except Exception as e:
+        logger.error(f"Incremental Gemini processing failed: {e}")
+        # Fallback to previous state rather than breaking the live stream
+        return current_state or {
+            "summary": "",
+            "key_points": [],
+            "decisions": [],
+            "action_items": [],
+            "open_questions": [],
+            "topics": [],
+            "risks": [],
+        }
+

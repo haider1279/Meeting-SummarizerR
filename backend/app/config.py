@@ -42,6 +42,13 @@ class Settings:
             "https://meeting-summarizer-rfrr.onrender.com/api/zoom/callback"
         )
         self.ZOOM_TOKEN_ENCRYPTION_KEY = os.getenv("ZOOM_TOKEN_ENCRYPTION_KEY", "")
+        # Zoom Webhook Secret Token (from Event Subscriptions in Zoom Marketplace app)
+        self.ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN", "")
+
+        # Live RTMS buffering configuration
+        self.RTMS_BUFFER_FLUSH_INTERVAL_SECONDS = int(os.getenv("RTMS_BUFFER_FLUSH_INTERVAL_SECONDS", "25"))
+        self.RTMS_MIN_WORDS_PER_CHUNK = int(os.getenv("RTMS_MIN_WORDS_PER_CHUNK", "30"))
+
         # State signing secret (falls back to Supabase service role key or Zoom secret if not set)
         self.STATE_SECRET_KEY = os.getenv(
             "STATE_SECRET_KEY",
@@ -52,6 +59,12 @@ class Settings:
     def is_zoom_configured(self) -> bool:
         """Check if minimum required Zoom OAuth configuration is present."""
         return bool(self.ZOOM_CLIENT_ID and self.ZOOM_CLIENT_SECRET)
+
+    @property
+    def is_rtms_configured(self) -> bool:
+        """Check if minimum required Zoom RTMS webhook configuration is present."""
+        return bool(self.is_zoom_configured and self.ZOOM_WEBHOOK_SECRET_TOKEN)
+
 
     @staticmethod
     def _require(key: str) -> str:

@@ -8,7 +8,8 @@ import {
   Settings, 
   LogOut,
   Sparkles,
-  User
+  User,
+  Radio
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -19,10 +20,12 @@ export const Sidebar = () => {
   const navItems = [
     { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { to: '/upload', label: 'New Meeting', icon: PlusCircle, highlight: true },
+    { to: '/live', label: 'Live Zoom', icon: Radio, isLive: true },
     { to: '/history', label: 'Past Meetings', icon: History },
     { to: '/action-items', label: 'Action Items', icon: CheckSquare },
     { to: '/settings', label: 'Settings', icon: Settings },
   ];
+
 
   const handleLogout = async () => {
     try {
@@ -59,7 +62,7 @@ export const Sidebar = () => {
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition-all duration-150 ${
+                `flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-sm transition-all duration-150 ${
                   isActive
                     ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-xs'
                     : item.highlight
@@ -68,9 +71,18 @@ export const Sidebar = () => {
                 }`
               }
             >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span>{item.label}</span>
+              <div className="flex items-center gap-3">
+                <Icon className={`w-4 h-4 shrink-0 ${item.isLive ? 'text-emerald-500' : ''}`} />
+                <span>{item.label}</span>
+              </div>
+              {item.isLive && (
+                <span className="flex h-2 w-2 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+              )}
             </NavLink>
+
           );
         })}
       </nav>
