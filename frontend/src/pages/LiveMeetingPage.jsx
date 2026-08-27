@@ -63,17 +63,22 @@ export const LiveMeetingPage = () => {
   // References
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
+  const heartbeatTimerRef = useRef(null);
+  const isMountedRef = useRef(true);
   const durationTimerRef = useRef(null);
   const transcriptEndRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
 
   // 1. Initial Zoom check and active session resolution
   useEffect(() => {
+    isMountedRef.current = true;
     initLiveSession();
     return () => {
+      isMountedRef.current = false;
       cleanupWebSocket();
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
     };
   }, [routeSessionId]);
 
@@ -82,6 +87,7 @@ export const LiveMeetingPage = () => {
     try {
       // Check Zoom connection status
       const statusRes = await api.getZoomStatus();
+      if (!isMountedRef.current) return;
       setZoomStatus(statusRes.data);
 
       if (!statusRes.data?.connected) {
@@ -110,7 +116,7 @@ export const LiveMeetingPage = () => {
         }
       }
 
-      if (targetSession) {
+      if (targetSession && isMountedRef.current) {
         setSession(targetSession);
         if (targetSession.current_insights) {
           setInsights(targetSession.current_insights);
@@ -123,7 +129,7 @@ export const LiveMeetingPage = () => {
         // Fetch existing transcript chunks
         try {
           const tRes = await api.getLiveTranscript(targetSession.id);
-          if (tRes.data?.chunks) {
+          if (tRes.data?.chunks && isMountedRef.current) {
             setTranscriptChunks(tRes.data.chunks);
           }
         } catch (e) {
@@ -134,24 +140,31 @@ export const LiveMeetingPage = () => {
         connectWebSocket(targetSession.id);
       }
     } catch (err) {
-      console.error('Error initializing live session:', err);
-      setConnectionStatus('error');
-      setStatusMessage(err.userMessage || 'Could not load live meeting session.');
+      if (isMountedRef.current) {
+        console.error('Error initializing live session:', err);
+        setConnectionStatus('error');
+        setStatusMessage(err.userMessage || 'Could not load live meeting session.');
+      }
     } finally {
-      setZoomChecking(false);
+      if (isMountedRef.current) {
+        setZoomChecking(false);
+      }
     }
   };
 
   // 2. Real-Time WebSocket Connection & Message Dispatcher
   const connectWebSocket = async (sessionId) => {
     cleanupWebSocket();
+    if (!isMountedRef.current) return;
 
     try {
       const { data: { session: authSession } } = await supabase.auth.getSession();
       const token = authSession?.access_token;
       if (!token) {
-        setConnectionStatus('error');
-        setStatusMessage('Authentication session expired. Please log in again.');
+        if (isMountedRef.current) {
+          setConnectionStatus('error');
+          setStatusMessage('Authentication session expired. Please log in again.');
+        }
         return;
       }
 
@@ -160,15 +173,36 @@ export const LiveMeetingPage = () => {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!isMountedRef.current) {
+          try { ws.close(); } catch (e) {}
+          return;
+        }
         console.log('[Live WS] Connected to live session stream:', sessionId);
         reconnectAttemptsRef.current = 0;
         setConnectionStatus((prev) => (prev === 'live' ? 'live' : 'waiting'));
         setStatusMessage('Connected to live meeting stream.');
+
+        // Start heartbeat ping every 15s to keep WebSocket alive through proxies (Render/Cloudflare)
+        if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = setInterval(() => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            try {
+              wsRef.current.send(JSON.stringify({ action: 'ping' }));
+            } catch (e) {
+              console.warn('[Live WS] Ping send error:', e);
+            }
+          }
+        }, 15000);
       };
 
       ws.onmessage = (event) => {
+        if (!isMountedRef.current) return;
         try {
           const payload = JSON.parse(event.data);
+          if (payload.type === 'pong') {
+            // Heartbeat response from server
+            return;
+          }
           handleWebSocketMessage(payload);
         } catch (e) {
           console.error('[Live WS] Failed to parse message:', e);
@@ -177,7 +211,11 @@ export const LiveMeetingPage = () => {
 
       ws.onclose = (event) => {
         console.log('[Live WS] Connection closed:', event.code, event.reason);
-        if (!isFinalizing && connectionStatus !== 'completed') {
+        if (heartbeatTimerRef.current) {
+          clearInterval(heartbeatTimerRef.current);
+          heartbeatTimerRef.current = null;
+        }
+        if (isMountedRef.current && !isFinalizing && connectionStatus !== 'completed') {
           handleWebSocketReconnect(sessionId);
         }
       };
@@ -187,7 +225,9 @@ export const LiveMeetingPage = () => {
       };
     } catch (err) {
       console.error('[Live WS] Connection setup failed:', err);
-      handleWebSocketReconnect(sessionId);
+      if (isMountedRef.current) {
+        handleWebSocketReconnect(sessionId);
+      }
     }
   };
 
@@ -247,6 +287,8 @@ export const LiveMeetingPage = () => {
   };
 
   const handleWebSocketReconnect = (sessionId) => {
+    if (!isMountedRef.current) return;
+
     if (reconnectAttemptsRef.current >= 8) {
       setConnectionStatus('error');
       setStatusMessage('Connection lost. Please refresh the page to reconnect.');
@@ -260,14 +302,15 @@ export const LiveMeetingPage = () => {
     reconnectAttemptsRef.current += 1;
 
     reconnectTimeoutRef.current = setTimeout(async () => {
+      if (!isMountedRef.current) return;
       // Re-fetch latest session state from REST before reconnecting WebSocket
       try {
         const res = await api.getLiveSession(sessionId);
-        if (res.data?.current_insights) {
+        if (res.data?.current_insights && isMountedRef.current) {
           setInsights(res.data.current_insights);
         }
         const tRes = await api.getLiveTranscript(sessionId);
-        if (tRes.data?.chunks) {
+        if (tRes.data?.chunks && isMountedRef.current) {
           setTranscriptChunks(tRes.data.chunks);
         }
       } catch (e) {
@@ -278,9 +321,26 @@ export const LiveMeetingPage = () => {
   };
 
   const cleanupWebSocket = () => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
     if (wsRef.current) {
-      wsRef.current.close();
+      const ws = wsRef.current;
       wsRef.current = null;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null; // Suppress onclose trigger during cleanup
+      try {
+        ws.close();
+      } catch (e) {
+        // ignore
+      }
     }
   };
 
