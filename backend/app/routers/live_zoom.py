@@ -70,23 +70,23 @@ async def zoom_rtms_webhook(
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": "Invalid JSON"})
 
     event_type = body.get("event")
-    logger.info(f"[RTMS Webhook] Received Zoom event: {event_type}")
+    logger.info(f"[RTMS] Webhook received: {event_type}")
 
     # 2. Handle Zoom CRC URL validation challenge
     if event_type == "endpoint.url_validation":
         plain_token = body.get("payload", {}).get("plainToken")
         if not plain_token:
-            logger.warning("[RTMS Webhook] Missing plainToken in url_validation event.")
+            logger.warning("[RTMS] Missing plainToken in url_validation event.")
             return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": "Missing plainToken"})
 
         crc_resp = rtms_service.generate_crc_response(plain_token)
-        logger.info("[RTMS Webhook] Successfully generated CRC validation response for Zoom.")
+        logger.info("[RTMS] Successfully generated CRC validation response for Zoom.")
         return JSONResponse(status_code=status.HTTP_200_OK, content=crc_resp)
 
     # 3. Verify HMAC-SHA256 signature for all regular events
     is_valid = rtms_service.verify_webhook_signature(headers, raw_body)
     if not is_valid:
-        logger.warning("[RTMS Webhook] Webhook signature verification failed. Unauthorized request rejected.")
+        logger.warning("[RTMS] Webhook signature verification failed. Unauthorized request rejected.")
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "Invalid signature"})
 
     payload = body.get("payload", {})
@@ -95,39 +95,51 @@ async def zoom_rtms_webhook(
     # Extract meeting and stream identifiers
     meeting_id = str(obj.get("meeting_id") or obj.get("id") or payload.get("meeting_id") or "")
     meeting_uuid = obj.get("meeting_uuid") or obj.get("uuid") or payload.get("meeting_uuid") or ""
-    host_id = obj.get("host_id") or payload.get("host_id") or ""
+    host_id = obj.get("host_id") or payload.get("host_id") or obj.get("host_user_id") or ""
+    host_email = obj.get("host_email") or payload.get("host_email") or payload.get("operator") or ""
     topic = obj.get("topic") or "Live Zoom Meeting"
     rtms_stream_id = obj.get("rtms_stream_id") or payload.get("rtms_stream_id") or ""
-    server_urls = obj.get("server_urls") or payload.get("server_urls")
+    server_urls = obj.get("server_urls") or payload.get("server_urls") or obj.get("rtms_server_urls") or payload.get("rtms_server_urls")
 
     logger.info(
-        f"[RTMS Webhook] Event: {event_type} | Meeting ID: {meeting_id} | "
-        f"UUID: {meeting_uuid} | Host: {host_id} | Stream: {rtms_stream_id}"
+        f"[RTMS] Webhook parsed: Event={event_type} | MeetingID={meeting_id} | "
+        f"UUID={meeting_uuid} | Host={host_id} | Email={host_email} | Stream={rtms_stream_id}"
     )
 
     # 4. Handle RTMS Started
-    if event_type in ["meeting.rtms_started", "meeting.rtms_broadcasting_started"]:
-        # Find user from Zoom host ID or active session
-        zoom_conn = supabase_service.get_zoom_connection_by_zoom_user_id(host_id) if host_id else None
+    if event_type in ["meeting.rtms_started", "meeting.rtms_broadcasting_started", "meeting.started"]:
+        logger.info(f"[RTMS] Meeting detected: {meeting_id} (Topic: {topic})")
+
+        # Find user from Zoom connection (by host_id, email, or single connected account)
+        zoom_conn = supabase_service.find_zoom_connection_for_webhook(
+            zoom_user_id=host_id,
+            zoom_email=host_email,
+        )
         user_id = zoom_conn.get("user_id") if zoom_conn else None
 
-        # If not resolved by host_id, search for existing live session with matching meeting_id
+        # Search for existing active live session with matching meeting info or for user
         session_db = supabase_service.find_live_session_by_zoom_info(
             zoom_meeting_id=meeting_id,
             zoom_meeting_uuid=meeting_uuid,
             rtms_stream_id=rtms_stream_id,
         )
 
+        if not session_db and user_id:
+            # Check if user has an active session in 'waiting' state
+            session_db = supabase_service.get_active_live_session(user_id)
+
         if session_db:
             session_id = session_db["id"]
             user_id = session_db["user_id"]
             # Update session with stream info
             supabase_service.update_live_session(session_id, {
-                "zoom_meeting_uuid": meeting_uuid,
-                "rtms_stream_id": rtms_stream_id,
-                "title": topic,
+                "zoom_meeting_id": meeting_id or session_db.get("zoom_meeting_id"),
+                "zoom_meeting_uuid": meeting_uuid or session_db.get("zoom_meeting_uuid"),
+                "rtms_stream_id": rtms_stream_id or session_db.get("rtms_stream_id"),
+                "title": topic or session_db.get("title"),
                 "status": "live",
             })
+            logger.info(f"[RTMS] Session updated to live: {session_id}")
         elif user_id:
             # Auto-create session for the authenticated Zoom user
             session_db = supabase_service.create_live_session(
@@ -138,9 +150,10 @@ async def zoom_rtms_webhook(
                 title=topic,
             )
             session_id = session_db["id"]
+            logger.info(f"[RTMS] Session created: {session_id} (User: {user_id})")
         else:
             logger.warning(
-                f"[RTMS Webhook] Could not match Zoom host_id ({host_id}) to any registered user. "
+                f"[RTMS] Could not match Zoom host ({host_id} / {host_email}) to any registered user. "
                 "Ensure user has connected Zoom in Meeting Summarizer Settings."
             )
             return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "user_not_found_ignored"})
@@ -154,7 +167,7 @@ async def zoom_rtms_webhook(
             title=topic,
         )
 
-        # Launch RTMS WebSocket client in background
+        # Launch RTMS WebSocket client in background if server URLs are present
         if server_urls:
             background_tasks.add_task(
                 rtms_service.connect_and_stream_rtms,
@@ -169,6 +182,7 @@ async def zoom_rtms_webhook(
 
     # 5. Handle RTMS Stopped / Meeting Ended
     elif event_type in ["meeting.rtms_stopped", "meeting.ended", "meeting.rtms_broadcasting_stopped"]:
+        logger.info(f"[RTMS] Meeting ended event received: {event_type} for meeting {meeting_id}")
         runtime = rtms_service.rtms_manager.find_runtime_by_zoom(meeting_uuid, rtms_stream_id)
         if not runtime and meeting_id:
             sess_db = supabase_service.find_live_session_by_zoom_info(zoom_meeting_id=meeting_id)
@@ -183,7 +197,7 @@ async def zoom_rtms_webhook(
 
         if runtime:
             background_tasks.add_task(rtms_service.finalize_live_meeting, runtime=runtime)
-            logger.info(f"[RTMS Webhook] Finalization task queued for meeting {meeting_id} ({runtime.session_id})")
+            logger.info(f"[RTMS] Finalization task queued for meeting {meeting_id} ({runtime.session_id})")
 
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "rtms_stopped_processed"})
 

@@ -329,6 +329,7 @@ async def ingest_transcript_packet(
             sequence_number=sequence,
             chunk_hash=chunk_hash,
         )
+        logger.info(f"[RTMS] Transcript chunk saved for session {runtime.session_id} (Speaker: {speaker_name})")
     except Exception as e:
         logger.error(f"[RTMS] Failed to persist transcript chunk to Supabase: {e}")
 
@@ -384,7 +385,7 @@ async def _run_ai_incremental_update(runtime: LiveSessionRuntime, new_transcript
     Run incremental Gemini analysis in background task and broadcast results.
     """
     async with runtime.ai_lock:
-        logger.info(f"[RTMS] Triggering incremental Gemini AI update for session {runtime.session_id} ({len(new_transcript_chunk)} chars)...")
+        logger.info(f"[RTMS] Gemini incremental update started for session {runtime.session_id} ({len(new_transcript_chunk)} chars)...")
         try:
             # Call Gemini incremental model
             loop = asyncio.get_running_loop()
@@ -413,10 +414,11 @@ async def _run_ai_incremental_update(runtime: LiveSessionRuntime, new_transcript
                 await runtime.broadcast("insights", {
                     "insights": updated_insights,
                 })
-                logger.info(f"[RTMS] Gemini AI incremental update complete for session {runtime.session_id}")
+                logger.info(f"[RTMS] Gemini incremental update completed for session {runtime.session_id}")
 
         except Exception as e:
             logger.error(f"[RTMS] Incremental Gemini AI update failed for session {runtime.session_id}: {e}", exc_info=True)
+
 
 
 # ============================================================
@@ -474,12 +476,12 @@ async def connect_and_stream_rtms(
 
     connected = False
     for target_url in urls_to_try:
-        logger.info(f"[RTMS] Attempting WebSocket connection to Zoom RTMS: {target_url}")
+        logger.info(f"[RTMS] Connecting to RTMS: {target_url}")
         try:
             async with websockets.connect(target_url, ping_interval=20, ping_timeout=20) as ws:
                 # 1. Send Handshake
                 await ws.send(json.dumps(handshake_payload))
-                logger.info(f"[RTMS] Handshake request sent to {target_url}. Waiting for response...")
+                logger.info(f"[RTMS] Handshake sent to {target_url}")
 
                 # Update session status to LIVE
                 runtime.status = "live"
@@ -501,7 +503,7 @@ async def connect_and_stream_rtms(
 
                         # Handshake response
                         if msg_type == MSG_TYPE_SIGNALING_HAND_SHAKE_RESP:
-                            logger.info(f"[RTMS] Handshake confirmed by Zoom RTMS for session {session_id}")
+                            logger.info(f"[RTMS] Handshake accepted for session {session_id}")
 
                         # Keep-alive ping from Zoom
                         elif msg_type == MSG_TYPE_KEEP_ALIVE_REQ:
@@ -523,6 +525,8 @@ async def connect_and_stream_rtms(
                             timestamp = payload.get("timestamp", datetime.now(timezone.utc).strftime("%H:%M:%S"))
                             sequence = payload.get("sequence", msg_json.get("sequence", 0))
                             lang = payload.get("language", "en")
+
+                            logger.info(f"[RTMS] Transcript packet received for session {session_id} from {speaker_name}")
 
                             await ingest_transcript_packet(
                                 runtime=runtime,
@@ -577,7 +581,7 @@ async def finalize_live_meeting(runtime: LiveSessionRuntime) -> Optional[str]:
     supabase_service.update_live_session(runtime.session_id, {"status": "processing"})
     await runtime.broadcast("status", {"status": "processing"})
 
-    logger.info(f"[RTMS] Starting finalization for live meeting session {runtime.session_id}...")
+    logger.info(f"[RTMS] Meeting ended: finalizing live meeting session {runtime.session_id}...")
 
     # 1. Flush any pending buffered text
     await _check_and_trigger_ai_update(runtime, force=True)
@@ -594,6 +598,7 @@ async def finalize_live_meeting(runtime: LiveSessionRuntime) -> Optional[str]:
         full_transcript_text = "No live transcript received during meeting session."
 
     # 3. Consolidate final analysis with Gemini
+    logger.info(f"[RTMS] Final analysis started for session {runtime.session_id}")
     try:
         loop = asyncio.get_running_loop()
         clean_transcript, analysis_dict = await loop.run_in_executor(
@@ -680,8 +685,9 @@ async def finalize_live_meeting(runtime: LiveSessionRuntime) -> Optional[str]:
             "message": "Live meeting ended and summary saved to History.",
         })
 
-        logger.info(f"[RTMS] Live meeting {runtime.session_id} finalized successfully as standard meeting {final_meeting_id}")
+        logger.info(f"[RTMS] Final meeting saved: {final_meeting_id} (Session: {runtime.session_id})")
         return final_meeting_id
+
 
     except Exception as e:
         logger.error(f"[RTMS] Failed to persist final meeting for session {runtime.session_id}: {e}", exc_info=True)

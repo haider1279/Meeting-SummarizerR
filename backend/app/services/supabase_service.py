@@ -447,6 +447,56 @@ def get_zoom_connection_by_zoom_user_id(zoom_user_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+def find_zoom_connection_for_webhook(
+    zoom_user_id: Optional[str] = None,
+    zoom_email: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Find Zoom connection for webhook mapping by zoom_user_id or zoom_email.
+    If no direct match is found and there is exactly one connected Zoom user in the database,
+    falls back to that user.
+    """
+    supabase = get_client()
+
+    if zoom_user_id:
+        res = (
+            supabase.table("zoom_connections")
+            .select("*")
+            .eq("zoom_user_id", zoom_user_id)
+            .eq("status", "connected")
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+
+    if zoom_email:
+        res = (
+            supabase.table("zoom_connections")
+            .select("*")
+            .ilike("zoom_email", zoom_email.strip())
+            .eq("status", "connected")
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+
+    # Fallback: if single connected account exists
+    res = (
+        supabase.table("zoom_connections")
+        .select("*")
+        .eq("status", "connected")
+        .limit(2)
+        .execute()
+    )
+    if res.data and len(res.data) == 1:
+        return res.data[0]
+
+    return None
+
+
+
 # ============================================================
 # Live Zoom RTMS session & transcript operations
 # ============================================================

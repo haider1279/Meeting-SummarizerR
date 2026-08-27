@@ -68,6 +68,17 @@ async def startup_event():
     else:
         logger.info("Zoom RTMS Webhook Secret Token not set (ZOOM_WEBHOOK_SECRET_TOKEN).")
 
+    # Safe route diagnostic logging
+    registered_paths = sorted(set([
+        getattr(route, "path", str(route)) 
+        for route in app.routes 
+        if hasattr(route, "path")
+    ]))
+    logger.info(f"[Startup] Total registered route endpoints: {len(registered_paths)}")
+    for path in registered_paths:
+        logger.info(f"  -> Route: {path}")
+
+
 
 @app.get("/", tags=["Health"], summary="Root endpoint")
 @app.head("/", tags=["Health"], summary="Root HEAD endpoint")
