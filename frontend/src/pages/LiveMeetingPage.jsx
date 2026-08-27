@@ -26,8 +26,29 @@ import { useToast } from '../components/Toast';
 
 // Browser support check for getDisplayMedia tab-audio capture
 const isTabCaptureSupported = () =>
+  typeof window !== 'undefined' &&
   typeof navigator !== 'undefined' &&
-  typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+  Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+
+// Dynamic MIME type resolution for MediaRecorder
+const getSupportedAudioMimeType = () => {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
+    return '';
+  }
+  const candidateTypes = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+    'audio/aac',
+  ];
+  for (const type of candidateTypes) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+  return '';
+};
 
 export const LiveMeetingPage = () => {
   const { sessionId: routeSessionId } = useParams();
@@ -350,50 +371,72 @@ export const LiveMeetingPage = () => {
     if (!isTabCaptureSupported()) {
       setCaptureError(
         'Your browser does not support tab audio capture. ' +
-        'Please use a recent version of Google Chrome or Microsoft Edge.'
+        'Please open Meeting Summarizer in Google Chrome or Microsoft Edge.'
       );
       return;
     }
 
-    // 2. Request browser tab audio stream
-    let stream;
+    // 2. Request browser tab audio stream (video: true is required by Chromium getDisplayMedia spec)
+    let displayStream;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: false,
+      displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          displaySurface: 'browser',
+        },
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
-          sampleRate: 48000,
+          autoGainControl: false,
         },
+        systemAudio: 'include',
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
       });
     } catch (err) {
+      console.warn('[GM Capture] getDisplayMedia error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setCaptureError(
-          'Tab sharing permission was cancelled. Please click "Start Google Meet Capture" again, ' +
-          'select your Google Meet tab, and check "Share tab audio".'
+          'Screen/tab sharing was cancelled or permission was denied. Please click "Start Google Meet Capture" again and select the Google Meet tab.'
         );
       } else if (err.name === 'NotFoundError') {
-        setCaptureError('No audio source found. Ensure you select a tab with audio enabled.');
+        setCaptureError('No capturable display surface was available.');
+      } else if (err.name === 'NotSupportedError' || err.name === 'TypeError') {
+        setCaptureError(
+          'Your browser/environment does not support Google Meet tab audio capture. Please use the latest Google Chrome or Microsoft Edge on HTTPS.'
+        );
+      } else if (err.name === 'SecurityError') {
+        setCaptureError(
+          'Browser security prevented tab capture. Make sure you are using the HTTPS website and browser permissions are granted.'
+        );
       } else {
-        setCaptureError(`Could not start tab capture: ${err.message}`);
+        setCaptureError(`Could not start tab capture (${err.name || 'Error'}): ${err.message || 'Unknown error'}`);
       }
       return;
     }
 
     // 3. Ensure audio track is present
-    const audioTracks = stream.getAudioTracks();
+    const audioTracks = displayStream.getAudioTracks();
     if (audioTracks.length === 0) {
-      stream.getTracks().forEach((t) => t.stop());
+      displayStream.getTracks().forEach((t) => t.stop());
       setCaptureError(
-        'No audio track was received. In the browser sharing dialog, you must select the ' +
+        'No tab audio was shared. In the browser sharing popup, you must select the ' +
         'Google Meet tab and tick the "Share tab audio" checkbox.'
       );
       return;
     }
 
-    mediaStreamRef.current = stream;
+    // 4. Immediately stop all video tracks — only audio is processed and streamed
+    displayStream.getVideoTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch (e) {}
+    });
 
-    // 4. Create a Google Meet session in database
+    // 5. Construct audio-only stream for MediaRecorder
+    const audioStream = new MediaStream(audioTracks);
+    mediaStreamRef.current = audioStream;
+
+    // 6. Create a Google Meet session in database
     let sessionId;
     try {
       setConnectionStatus('connecting');
@@ -403,30 +446,23 @@ export const LiveMeetingPage = () => {
       sessionId = sess.id;
       setSession(sess);
     } catch (err) {
-      stream.getTracks().forEach((t) => t.stop());
+      audioStream.getTracks().forEach((t) => t.stop());
       setConnectionStatus('error');
       setStatusMessage(err.userMessage || 'Failed to create live session.');
       return;
     }
 
-    // 5. Open authenticated WebSocket
+    // 7. Open authenticated WebSocket
     await connectWebSocket(sessionId);
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // 6. Start MediaRecorder with supported format
-    let mimeType = 'audio/webm;codecs=opus';
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'audio/webm';
-    }
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = '';
-    }
-
+    // 8. Start MediaRecorder with dynamically supported audio format
+    const mimeType = getSupportedAudioMimeType();
     let recorder;
     try {
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : {});
     } catch (e) {
-      recorder = new MediaRecorder(stream);
+      recorder = new MediaRecorder(audioStream);
     }
     mediaRecorderRef.current = recorder;
 
@@ -441,7 +477,7 @@ export const LiveMeetingPage = () => {
       setCaptureError('Recording stream error encountered. Please try restarting capture.');
     };
 
-    // 7. Handle user clicking Chrome's "Stop sharing" bar
+    // 9. Handle user clicking Chrome's "Stop sharing" bar
     audioTracks[0].onended = () => {
       console.log('[GM Capture] Audio track ended by user.');
       if (isMountedRef.current && !isIntentionalStopRef.current) {
@@ -450,7 +486,7 @@ export const LiveMeetingPage = () => {
       }
     };
 
-    // 8. Stream 5-second audio chunks continuously
+    // 10. Stream 5-second audio chunks continuously
     recorder.start(5000);
     setConnectionStatus('capturing');
     setStatusMessage('Capturing Google Meet audio in real time. Speak in the Meet call!');
