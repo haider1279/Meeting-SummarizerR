@@ -16,13 +16,13 @@
 -- ============================================================
 
 ALTER TABLE public.live_meeting_sessions
-    ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'zoom_rtms';
+    ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'google_meet';
 
 -- Index for filtering by source (used by get_active_google_meet_session)
 CREATE INDEX IF NOT EXISTS idx_live_sessions_source
     ON public.live_meeting_sessions(user_id, source);
 
--- Backfill any existing rows (they are all Zoom RTMS sessions)
+-- Backfill any existing rows
 UPDATE public.live_meeting_sessions
-SET source = 'zoom_rtms'
+SET source = 'google_meet'
 WHERE source IS NULL OR source = '';

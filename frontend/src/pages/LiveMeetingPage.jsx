@@ -13,30 +13,18 @@ import {
   HelpCircle,
   StopCircle,
   RefreshCw,
-  Video,
-  Mic,
-  MonitorSpeaker,
-  ExternalLink,
   Search,
   ArrowDown,
-  ShieldCheck,
-  Tag,
-  Globe,
+  MonitorSpeaker,
   Info,
+  Globe,
 } from 'lucide-react';
-import { api, getWebSocketUrl, getGoogleMeetWebSocketUrl } from '../lib/apiClient';
+import { api, getGoogleMeetWebSocketUrl } from '../lib/apiClient';
 import { supabase } from '../lib/supabaseClient';
 import { Button } from '../components/Button';
-import { LoadingState } from '../components/LoadingState';
-import { ErrorMessage } from '../components/ErrorMessage';
-import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
 
-// ─── Source identifier constants ────────────────────────────────────────────
-const SOURCE_ZOOM = 'zoom_rtms';
-const SOURCE_GOOGLE_MEET = 'google_meet';
-
-// ─── Check browser support for getDisplayMedia tab-audio capture ────────────
+// Browser support check for getDisplayMedia tab-audio capture
 const isTabCaptureSupported = () =>
   typeof navigator !== 'undefined' &&
   typeof navigator.mediaDevices?.getDisplayMedia === 'function';
@@ -46,15 +34,10 @@ export const LiveMeetingPage = () => {
   const navigate = useNavigate();
   const { showSuccess, showError, showInfo } = useToast();
 
-  // ── Source selection ──────────────────────────────────────────────────────
-  const [source, setSource] = useState(SOURCE_GOOGLE_MEET);
-
   // ── Session & Connection State ────────────────────────────────────────────
-  const [zoomStatus, setZoomStatus] = useState({ configured: true, connected: false, email: null });
-  const [zoomChecking, setZoomChecking] = useState(false);
   const [session, setSession] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('idle');
-  // idle | connecting | waiting | capturing | live | processing | reconnecting | completed | error
+  // idle | connecting | capturing | live | processing | reconnecting | completed | error
   const [statusMessage, setStatusMessage] = useState('');
 
   // ── Live Data State ───────────────────────────────────────────────────────
@@ -71,15 +54,11 @@ export const LiveMeetingPage = () => {
 
   // ── UI State ──────────────────────────────────────────────────────────────
   const [meetingDuration, setMeetingDuration] = useState(0);
-  const [activeTab, setActiveTab] = useState('insights');
   const [autoScroll, setAutoScroll] = useState(true);
   const [transcriptSearch, setTranscriptSearch] = useState('');
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
   const [sttConfigured, setSttConfigured] = useState(true);
-
-  // ── Browser capture state ─────────────────────────────────────────────────
-  const [isCaptureActive, setIsCaptureActive] = useState(false);
   const [captureError, setCaptureError] = useState(null);
 
   // ── References ────────────────────────────────────────────────────────────
@@ -91,14 +70,13 @@ export const LiveMeetingPage = () => {
   const transcriptEndRef = useRef(null);
   const reconnectAttemptsRef = useRef(0);
 
-  // Google Meet capture refs
+  // Media capture refs
   const mediaStreamRef = useRef(null);
   const mediaRecorderRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const isIntentionalStopRef = useRef(false); // prevents reconnect on deliberate stop
+  const isIntentionalStopRef = useRef(false);
 
   // ============================================================
-  // Lifecycle: mount / unmount
+  // Lifecycle: mount / unmount cleanup
   // ============================================================
   useEffect(() => {
     isMountedRef.current = true;
@@ -114,7 +92,7 @@ export const LiveMeetingPage = () => {
   }, []);
 
   // ============================================================
-  // Auto-scroll transcript
+  // Auto-scroll transcript feed
   // ============================================================
   useEffect(() => {
     if (autoScroll && transcriptEndRef.current) {
@@ -123,7 +101,7 @@ export const LiveMeetingPage = () => {
   }, [transcriptChunks, autoScroll]);
 
   // ============================================================
-  // Duration timer when capturing / live
+  // Meeting Duration Timer
   // ============================================================
   useEffect(() => {
     if (connectionStatus === 'live' || connectionStatus === 'capturing') {
@@ -139,7 +117,7 @@ export const LiveMeetingPage = () => {
   }, [connectionStatus]);
 
   // ============================================================
-  // Route: if a sessionId is given, load it and connect WS
+  // Route Session Loading (if /live/:sessionId visited)
   // ============================================================
   useEffect(() => {
     if (routeSessionId) {
@@ -151,50 +129,39 @@ export const LiveMeetingPage = () => {
   const loadExistingSession = async (sessionId) => {
     if (!isMountedRef.current) return;
     setConnectionStatus('connecting');
-    setStatusMessage('Loading session...');
+    setStatusMessage('Loading Google Meet session...');
     try {
-      // Try Google Meet first, then Zoom RTMS
-      let sessRes;
-      let detectedSource = SOURCE_GOOGLE_MEET;
-      try {
-        sessRes = await api.getGoogleMeetSession(sessionId);
-      } catch {
-        sessRes = await api.getLiveSession(sessionId);
-        detectedSource = SOURCE_ZOOM;
-      }
+      const sessRes = await api.getGoogleMeetSession(sessionId);
       if (!isMountedRef.current) return;
       const sess = sessRes.data;
       setSession(sess);
-      setSource(detectedSource);
       if (sess.current_insights) setInsights(sess.current_insights);
       if (sess.status === 'completed' && sess.final_meeting_id) {
         navigate(`/meetings/${sess.final_meeting_id}`);
         return;
       }
-      // Load transcript
+      // Preload transcript chunks
       try {
-        const tRes = detectedSource === SOURCE_GOOGLE_MEET
-          ? await api.getGoogleMeetTranscript(sessionId)
-          : await api.getLiveTranscript(sessionId);
+        const tRes = await api.getGoogleMeetTranscript(sessionId);
         if (tRes.data?.chunks && isMountedRef.current) {
           setTranscriptChunks(tRes.data.chunks);
         }
       } catch (e) {
-        console.warn('Could not preload transcript:', e);
+        console.warn('Could not preload transcript chunks:', e);
       }
-      connectWebSocket(sessionId, detectedSource);
+      connectWebSocket(sessionId);
     } catch (err) {
       if (isMountedRef.current) {
         setConnectionStatus('error');
-        setStatusMessage(err.userMessage || 'Session not found.');
+        setStatusMessage(err.userMessage || 'Google Meet session not found.');
       }
     }
   };
 
   // ============================================================
-  // WebSocket helpers (shared by both sources)
+  // Real-Time WebSocket Connection & Message Dispatcher
   // ============================================================
-  const connectWebSocket = useCallback(async (sessionId, sessionSource) => {
+  const connectWebSocket = useCallback(async (sessionId) => {
     cleanupWebSocket();
     if (!isMountedRef.current) return;
 
@@ -209,31 +176,29 @@ export const LiveMeetingPage = () => {
         return;
       }
 
-      const wsUrl = sessionSource === SOURCE_GOOGLE_MEET
-        ? getGoogleMeetWebSocketUrl(sessionId, token)
-        : getWebSocketUrl(sessionId, token);
-
+      const wsUrl = getGoogleMeetWebSocketUrl(sessionId, token);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!isMountedRef.current) { try { ws.close(); } catch (e) {} return; }
-        console.log(`[Live WS] Connected to ${sessionSource} session:`, sessionId);
-        reconnectAttemptsRef.current = 0;
-
-        if (sessionSource === SOURCE_GOOGLE_MEET) {
-          setConnectionStatus('capturing');
-          setStatusMessage('Connected. Browser audio is streaming to backend...');
-        } else {
-          setConnectionStatus((prev) => (prev === 'live' ? 'live' : 'waiting'));
-          setStatusMessage('Connected to live meeting stream.');
+        if (!isMountedRef.current) {
+          try { ws.close(); } catch (e) {}
+          return;
         }
+        console.log('[Google Meet WS] Connected to live session stream:', sessionId);
+        reconnectAttemptsRef.current = 0;
+        setConnectionStatus('capturing');
+        setStatusMessage('Connected. Streaming Google Meet tab audio to backend...');
 
-        // 15-second heartbeat to keep proxies alive
+        // Start 15s heartbeat keep-alive
         if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
         heartbeatTimerRef.current = setInterval(() => {
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            try { wsRef.current.send(JSON.stringify({ action: 'ping' })); } catch (e) {}
+            try {
+              wsRef.current.send(JSON.stringify({ action: 'ping' }));
+            } catch (e) {
+              console.warn('[Google Meet WS] Ping error:', e);
+            }
           }
         }, 15000);
       };
@@ -245,36 +210,38 @@ export const LiveMeetingPage = () => {
           if (payload.type === 'pong') return;
           handleWebSocketMessage(payload);
         } catch (e) {
-          console.error('[Live WS] Failed to parse message:', e);
+          console.error('[Google Meet WS] Failed to parse message:', e);
         }
       };
 
       ws.onclose = (event) => {
-        console.log('[Live WS] Connection closed:', event.code, event.reason);
-        if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
-        // Don't reconnect if it was an intentional stop or already completed
+        console.log('[Google Meet WS] Connection closed:', event.code, event.reason);
+        if (heartbeatTimerRef.current) {
+          clearInterval(heartbeatTimerRef.current);
+          heartbeatTimerRef.current = null;
+        }
         if (isMountedRef.current && !isIntentionalStopRef.current && !isFinalizing && connectionStatus !== 'completed') {
-          handleWebSocketReconnect(sessionId, sessionSource);
+          handleWebSocketReconnect(sessionId);
         }
       };
 
       ws.onerror = (error) => {
-        console.error('[Live WS] Error:', error);
+        console.error('[Google Meet WS] Error encountered:', error);
       };
     } catch (err) {
-      console.error('[Live WS] Setup failed:', err);
+      console.error('[Google Meet WS] Setup failed:', err);
       if (isMountedRef.current) {
-        handleWebSocketReconnect(sessionId, sessionSource);
+        handleWebSocketReconnect(sessionId);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFinalizing, connectionStatus]);
 
   const handleWebSocketMessage = (payload) => {
     const { type, data } = payload;
 
     if (type === 'init') {
-      if (data.status) setConnectionStatus(source === SOURCE_GOOGLE_MEET ? 'capturing' : data.status);
+      if (data.status) setConnectionStatus(data.status === 'waiting' ? 'capturing' : data.status);
       if (data.insights) setInsights(data.insights);
       if (data.chunks) setTranscriptChunks(data.chunks);
       if (data.stt_configured !== undefined) setSttConfigured(data.stt_configured);
@@ -283,11 +250,11 @@ export const LiveMeetingPage = () => {
       }
     } else if (type === 'status') {
       const s = data.status;
-      setConnectionStatus(source === SOURCE_GOOGLE_MEET && s === 'live' ? 'capturing' : s);
+      setConnectionStatus(s === 'live' ? 'capturing' : s);
       if (s === 'live' || s === 'capturing') {
-        setStatusMessage('Live — receiving audio and generating transcript...');
+        setStatusMessage('Live stream active. Receiving audio and generating transcript...');
       } else if (s === 'processing') {
-        setStatusMessage('Finalizing AI summary...');
+        setStatusMessage('Meeting ended. Generating final AI summary...');
       } else if (s === 'disconnected') {
         setStatusMessage('Audio stream paused.');
       }
@@ -299,7 +266,7 @@ export const LiveMeetingPage = () => {
           return [...prev, data.chunk];
         });
         if (connectionStatus !== 'live' && connectionStatus !== 'capturing') {
-          setConnectionStatus(source === SOURCE_GOOGLE_MEET ? 'capturing' : 'live');
+          setConnectionStatus('capturing');
         }
       }
     } else if (type === 'insights') {
@@ -307,7 +274,7 @@ export const LiveMeetingPage = () => {
     } else if (type === 'meeting_ended') {
       setConnectionStatus('completed');
       setIsFinalizing(false);
-      showSuccess('Meeting ended — summary saved to History!', 'Meeting Complete');
+      showSuccess('Google Meet live session ended and summary saved to History!', 'Meeting Complete');
       if (data.final_meeting_id) {
         setTimeout(() => navigate(`/meetings/${data.final_meeting_id}`), 1200);
       }
@@ -316,11 +283,11 @@ export const LiveMeetingPage = () => {
     }
   };
 
-  const handleWebSocketReconnect = (sessionId, sessionSource) => {
+  const handleWebSocketReconnect = (sessionId) => {
     if (!isMountedRef.current) return;
     if (reconnectAttemptsRef.current >= 8) {
       setConnectionStatus('error');
-      setStatusMessage('Connection lost. Please refresh the page.');
+      setStatusMessage('Connection lost. Please refresh the page to reconnect.');
       return;
     }
     setConnectionStatus('reconnecting');
@@ -329,35 +296,40 @@ export const LiveMeetingPage = () => {
     reconnectAttemptsRef.current += 1;
     reconnectTimeoutRef.current = setTimeout(async () => {
       if (!isMountedRef.current) return;
-      connectWebSocket(sessionId, sessionSource);
+      connectWebSocket(sessionId);
     }, delay);
   };
 
   const cleanupWebSocket = () => {
-    if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
-    if (reconnectTimeoutRef.current) { clearTimeout(reconnectTimeoutRef.current); reconnectTimeoutRef.current = null; }
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
     if (wsRef.current) {
       const ws = wsRef.current;
       wsRef.current = null;
-      ws.onopen = null; ws.onmessage = null; ws.onerror = null; ws.onclose = null;
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       try { ws.close(); } catch (e) {}
     }
   };
 
   // ============================================================
-  // Google Meet — Browser Tab Audio Capture
+  // Google Meet Browser Tab Audio Capture
   // ============================================================
 
-  /**
-   * Send a base64-encoded audio blob over the WebSocket to the backend.
-   * This is the core of the Google Meet audio pipeline.
-   */
   const sendAudioChunkOverWebSocket = useCallback((blob) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const reader = new FileReader();
     reader.onloadend = () => {
       try {
-        const base64 = reader.result.split(',')[1]; // strip data:... prefix
+        const base64 = reader.result.split(',')[1];
         wsRef.current.send(JSON.stringify({
           action: 'audio_chunk',
           data: base64,
@@ -370,24 +342,20 @@ export const LiveMeetingPage = () => {
     reader.readAsDataURL(blob);
   }, []);
 
-  /**
-   * Start browser tab audio capture via getDisplayMedia().
-   * Called when user clicks "Start Google Meet Capture".
-   */
   const startGoogleMeetCapture = async () => {
     setCaptureError(null);
     isIntentionalStopRef.current = false;
 
-    // 1. Browser support check
+    // 1. Browser capability verification
     if (!isTabCaptureSupported()) {
       setCaptureError(
-        'Your browser does not support the required tab-audio capture. ' +
-        'Please use Google Chrome or Microsoft Edge (Chromium-based).'
+        'Your browser does not support tab audio capture. ' +
+        'Please use a recent version of Google Chrome or Microsoft Edge.'
       );
       return;
     }
 
-    // 2. Request tab audio via getDisplayMedia
+    // 2. Request browser tab audio stream
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
@@ -401,64 +369,57 @@ export const LiveMeetingPage = () => {
     } catch (err) {
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setCaptureError(
-          'Permission denied. Please click "Start Google Meet Capture" again and ' +
-          'select your Google Meet browser tab, then enable "Share tab audio".'
+          'Tab sharing permission was cancelled. Please click "Start Google Meet Capture" again, ' +
+          'select your Google Meet tab, and check "Share tab audio".'
         );
       } else if (err.name === 'NotFoundError') {
-        setCaptureError(
-          'No audio source found. Make sure to select a browser tab with audio enabled.'
-        );
+        setCaptureError('No audio source found. Ensure you select a tab with audio enabled.');
       } else {
-        setCaptureError(`Could not start capture: ${err.message}`);
+        setCaptureError(`Could not start tab capture: ${err.message}`);
       }
       return;
     }
 
-    // 3. Verify the stream has an audio track
+    // 3. Ensure audio track is present
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
       stream.getTracks().forEach((t) => t.stop());
       setCaptureError(
-        'No audio track received. Please select the Google Meet tab and ensure ' +
-        '"Share tab audio" is checked in the sharing dialog.'
+        'No audio track was received. In the browser sharing dialog, you must select the ' +
+        'Google Meet tab and tick the "Share tab audio" checkbox.'
       );
       return;
     }
 
     mediaStreamRef.current = stream;
-    setIsCaptureActive(true);
 
-    // 4. Create a backend session
+    // 4. Create a Google Meet session in database
     let sessionId;
-    let sess;
     try {
       setConnectionStatus('connecting');
-      setStatusMessage('Creating live session...');
+      setStatusMessage('Initializing Google Meet live session...');
       const res = await api.createGoogleMeetSession({ title: 'Google Meet — Live Session' });
-      sess = res.data;
+      const sess = res.data;
       sessionId = sess.id;
       setSession(sess);
     } catch (err) {
       stream.getTracks().forEach((t) => t.stop());
-      setIsCaptureActive(false);
       setConnectionStatus('error');
-      setStatusMessage(err.userMessage || 'Failed to create session.');
+      setStatusMessage(err.userMessage || 'Failed to create live session.');
       return;
     }
 
-    // 5. Open WebSocket BEFORE starting MediaRecorder
-    await connectWebSocket(sessionId, SOURCE_GOOGLE_MEET);
-
-    // Give WS time to open before first chunk arrives
+    // 5. Open authenticated WebSocket
+    await connectWebSocket(sessionId);
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // 6. Start MediaRecorder — 5-second chunks, WebM/Opus
+    // 6. Start MediaRecorder with supported format
     let mimeType = 'audio/webm;codecs=opus';
     if (!MediaRecorder.isTypeSupported(mimeType)) {
       mimeType = 'audio/webm';
     }
     if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = ''; // browser default
+      mimeType = '';
     }
 
     let recorder;
@@ -475,34 +436,26 @@ export const LiveMeetingPage = () => {
       }
     };
 
-    recorder.onstop = () => {
-      console.log('[GM Capture] MediaRecorder stopped.');
-    };
-
     recorder.onerror = (e) => {
       console.error('[GM Capture] MediaRecorder error:', e);
-      setCaptureError('Recording error. Please try again.');
+      setCaptureError('Recording stream error encountered. Please try restarting capture.');
     };
 
-    // 7. Detect when user stops sharing from Chrome's share bar
+    // 7. Handle user clicking Chrome's "Stop sharing" bar
     audioTracks[0].onended = () => {
-      console.log('[GM Capture] Audio track ended (user stopped sharing).');
+      console.log('[GM Capture] Audio track ended by user.');
       if (isMountedRef.current && !isIntentionalStopRef.current) {
         showInfo('Tab sharing stopped. Finalizing meeting...');
         handleStopGoogleMeetCapture();
       }
     };
 
-    // 8. Start recording with 5-second timeslice
+    // 8. Stream 5-second audio chunks continuously
     recorder.start(5000);
     setConnectionStatus('capturing');
-    setStatusMessage('Capturing Google Meet audio. Speak now!');
-    console.log('[GM Capture] MediaRecorder started. MIME:', recorder.mimeType);
+    setStatusMessage('Capturing Google Meet audio in real time. Speak in the Meet call!');
   };
 
-  /**
-   * Stop audio capture (either user-triggered or auto on track end).
-   */
   const stopBrowserCapture = useCallback((silent = false) => {
     isIntentionalStopRef.current = true;
 
@@ -521,13 +474,6 @@ export const LiveMeetingPage = () => {
       } catch (e) {}
       mediaStreamRef.current = null;
     }
-
-    if (audioContextRef.current) {
-      try { audioContextRef.current.close(); } catch (e) {}
-      audioContextRef.current = null;
-    }
-
-    setIsCaptureActive(false);
   }, []);
 
   const handleStopGoogleMeetCapture = async () => {
@@ -537,23 +483,23 @@ export const LiveMeetingPage = () => {
     setConnectionStatus('processing');
     setStatusMessage('Finalizing summary and saving meeting to history...');
 
-    // 1. Stop the browser audio stream
+    // 1. Stop audio capture tracks
     stopBrowserCapture();
 
-    // 2. Give the backend a moment to process any in-flight chunks
+    // 2. Allow in-flight audio chunks to flush
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
-    // 3. Send stop signal over WebSocket so backend finalizes
+    // 3. Send stop action over WebSocket
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       try {
         wsRef.current.send(JSON.stringify({ action: 'stop' }));
       } catch (e) {}
     }
 
-    // 4. Also call REST stop as a fallback
+    // 4. REST stop fallback
     try {
       await api.stopGoogleMeetSession(session.id);
-      showInfo('Generating final AI summary...');
+      showInfo('Consolidating final AI summary with Gemini...');
     } catch (err) {
       console.error('REST stop fallback error:', err);
       showError(err.userMessage || 'Failed to stop session.');
@@ -562,89 +508,7 @@ export const LiveMeetingPage = () => {
   };
 
   // ============================================================
-  // Zoom RTMS — existing handlers (unchanged logic)
-  // ============================================================
-  const handleConnectZoom = async () => {
-    try {
-      const res = await api.getZoomConnectUrl();
-      if (res.data?.url) window.location.href = res.data.url;
-    } catch (err) {
-      showError(err.userMessage || 'Failed to obtain Zoom connect URL.');
-    }
-  };
-
-  const checkZoomAndInitRtms = async () => {
-    setZoomChecking(true);
-    setConnectionStatus('connecting');
-    setStatusMessage('Checking Zoom connection...');
-    try {
-      const statusRes = await api.getZoomStatus();
-      if (!isMountedRef.current) return;
-      setZoomStatus(statusRes.data);
-
-      if (!statusRes.data?.connected) {
-        setConnectionStatus('error');
-        setStatusMessage('Zoom is not connected.');
-        setZoomChecking(false);
-        return;
-      }
-
-      // Find or create RTMS session
-      let targetSession = null;
-      if (routeSessionId) {
-        const sessRes = await api.getLiveSession(routeSessionId);
-        targetSession = sessRes.data;
-      } else {
-        const activeRes = await api.getActiveLiveSession();
-        if (activeRes.data?.is_active && activeRes.data?.session) {
-          targetSession = activeRes.data.session;
-        } else {
-          const createRes = await api.createLiveSession({ title: 'Live Zoom Meeting', zoom_meeting_id: 'live_stream' });
-          targetSession = createRes.data;
-        }
-      }
-
-      if (targetSession && isMountedRef.current) {
-        setSession(targetSession);
-        if (targetSession.current_insights) setInsights(targetSession.current_insights);
-        if (targetSession.status === 'completed' && targetSession.final_meeting_id) {
-          navigate(`/meetings/${targetSession.final_meeting_id}`);
-          return;
-        }
-        try {
-          const tRes = await api.getLiveTranscript(targetSession.id);
-          if (tRes.data?.chunks && isMountedRef.current) setTranscriptChunks(tRes.data.chunks);
-        } catch (e) { console.warn('Transcript preload:', e); }
-
-        connectWebSocket(targetSession.id, SOURCE_ZOOM);
-      }
-    } catch (err) {
-      if (isMountedRef.current) {
-        setConnectionStatus('error');
-        setStatusMessage(err.userMessage || 'Could not load live meeting session.');
-      }
-    } finally {
-      if (isMountedRef.current) setZoomChecking(false);
-    }
-  };
-
-  const handleStopZoomMeeting = async () => {
-    if (!session?.id) return;
-    setIsFinalizing(true);
-    setShowStopModal(false);
-    setConnectionStatus('processing');
-    setStatusMessage('Finalizing summary and saving meeting to history...');
-    try {
-      const res = await api.stopLiveSession(session.id);
-      showInfo(res.data?.message || 'Finalizing meeting summary with Gemini...');
-    } catch (err) {
-      showError(err.userMessage || 'Failed to stop live session.');
-      setIsFinalizing(false);
-    }
-  };
-
-  // ============================================================
-  // Utility helpers
+  // Helpers
   // ============================================================
   const formatDuration = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -662,7 +526,7 @@ export const LiveMeetingPage = () => {
   });
 
   const uniqueSpeakers = Array.from(new Set(transcriptChunks.map((c) => c.speaker_name || 'Speaker')));
-  const isActivelyRunning = ['capturing', 'live', 'waiting'].includes(connectionStatus);
+  const isActivelyRunning = ['capturing', 'live'].includes(connectionStatus);
 
   // ============================================================
   // RENDER
@@ -670,177 +534,107 @@ export const LiveMeetingPage = () => {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
 
-      {/* ── Source Selector (only show when no session is active yet) ─── */}
+      {/* ── Main Setup Panel (when no session is running yet) ────────── */}
       {!session && connectionStatus === 'idle' && (
-        <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs">
-          <h1 className="text-lg font-bold text-slate-900 mb-4">Live Meeting Summarization</h1>
-          <p className="text-xs text-slate-500 mb-4">
-            Choose your meeting source. Google Meet uses browser tab audio capture. Zoom uses the RTMS webhook pipeline.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setSource(SOURCE_GOOGLE_MEET)}
-              className={`p-4 rounded-2xl border-2 text-left transition-all ${
-                source === SOURCE_GOOGLE_MEET
-                  ? 'border-indigo-500 bg-indigo-50'
-                  : 'border-slate-200 bg-white hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-blue-500 to-green-500 flex items-center justify-center">
-                  <MonitorSpeaker className="w-4 h-4 text-white" />
+        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/80 shadow-xs space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+            <div>
+              <div className="flex items-center gap-2.5 mb-1.5">
+                <div className="w-9 h-9 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-200">
+                  <MonitorSpeaker className="w-5 h-5" />
                 </div>
-                <span className="font-bold text-slate-900 text-sm">Google Meet</span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">$0 FREE</span>
+                <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+                  Google Meet Live
+                </h1>
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  $0 FREE
+                </span>
               </div>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Browser tab audio capture. Works with any personal Gmail account. Requires Chrome or Edge.
+              <p className="text-xs text-slate-500 max-w-xl leading-relaxed">
+                Capture your Google Meet tab audio directly from your browser and receive real-time speech transcription and live Gemini AI summaries.
               </p>
-            </button>
+            </div>
 
-            <button
-              type="button"
-              onClick={() => setSource(SOURCE_ZOOM)}
-              className={`p-4 rounded-2xl border-2 text-left transition-all ${
-                source === SOURCE_ZOOM
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-slate-200 bg-white hover:border-slate-300'
-              }`}
+            <Button
+              variant="primary"
+              size="lg"
+              icon={MonitorSpeaker}
+              onClick={startGoogleMeetCapture}
+              disabled={!isTabCaptureSupported()}
+              className="bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200 self-start sm:self-center"
             >
-              <div className="flex items-center gap-3 mb-2">
-                <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center">
-                  <Video className="w-4 h-4 text-white" />
-                </div>
-                <span className="font-bold text-slate-900 text-sm">Zoom</span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">RTMS</span>
-              </div>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Zoom RTMS webhook pipeline. Requires Zoom OAuth connection and RTMS-enabled app.
-              </p>
-            </button>
+              Start Google Meet Capture
+            </Button>
           </div>
 
-          {/* ── Google Meet: setup panel ─────────────────────────────── */}
-          {source === SOURCE_GOOGLE_MEET && (
-            <div className="mt-5 space-y-4">
-              {/* Browser support warning */}
-              {!isTabCaptureSupported() && (
-                <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800">
-                  <div className="flex items-center gap-2 font-bold mb-1">
-                    <AlertTriangle className="w-4 h-4" />
-                    Unsupported Browser
-                  </div>
-                  Your browser does not support tab audio capture. Please use Google Chrome or Microsoft Edge (Chromium-based).
-                </div>
-              )}
-
-              {/* STT not configured notice */}
-              {!sttConfigured && (
-                <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800">
-                  <div className="flex items-center gap-2 font-bold mb-1">
-                    <Info className="w-4 h-4" />
-                    Speech-to-Text Not Configured
-                  </div>
-                  <p>
-                    <code className="bg-amber-100 px-1 rounded">GOOGLE_SPEECH_API_KEY</code> is not set on the server.
-                    Audio will be captured and sent, but transcription will not produce text.
-                    The session, WebSocket, and Gemini analysis still work once STT is configured.
-                  </p>
-                </div>
-              )}
-
-              {/* Instructions */}
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
-                <p className="text-xs font-bold text-slate-800 flex items-center gap-2">
-                  <Chrome className="w-4 h-4 text-indigo-600" /> How to capture Google Meet audio
-                </p>
-                <ol className="list-decimal list-inside space-y-1.5 text-xs text-slate-600 leading-relaxed">
-                  <li>Open your Google Meet in <strong>Chrome or Edge</strong> and join the meeting.</li>
-                  <li>Come back to this tab and click <strong>"Start Google Meet Capture"</strong> below.</li>
-                  <li>In the browser dialog, select the <strong>Google Meet browser tab</strong>.</li>
-                  <li className="font-semibold text-slate-800">✅ Enable "Share tab audio" — this is required!</li>
-                  <li>Click <strong>Share</strong>. Keep the Google Meet tab open while recording.</li>
-                  <li>Transcript and AI insights will appear below in real time.</li>
-                </ol>
+          {/* Browser Support Warning */}
+          {!isTabCaptureSupported() && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-rose-600" />
+              <div>
+                <span className="font-bold block mb-0.5">Browser Not Supported</span>
+                Your browser does not support tab audio capture. Please open Meeting Summarizer in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.
               </div>
-
-              {captureError && (
-                <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800">
-                  <div className="flex items-center gap-2 font-bold mb-1">
-                    <AlertTriangle className="w-4 h-4" /> Capture Error
-                  </div>
-                  {captureError}
-                </div>
-              )}
-
-              <Button
-                variant="primary"
-                size="lg"
-                icon={MonitorSpeaker}
-                onClick={startGoogleMeetCapture}
-                disabled={!isTabCaptureSupported()}
-                className="w-full sm:w-auto bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700"
-              >
-                Start Google Meet Capture
-              </Button>
             </div>
           )}
 
-          {/* ── Zoom RTMS: connect panel ─────────────────────────────── */}
-          {source === SOURCE_ZOOM && (
-            <div className="mt-5">
-              <Button
-                variant="primary"
-                size="lg"
-                icon={Video}
-                onClick={checkZoomAndInitRtms}
-                loading={zoomChecking}
-                className="w-full sm:w-auto"
-              >
-                {zoomChecking ? 'Checking Zoom...' : 'Connect to Zoom RTMS'}
-              </Button>
+          {/* Error Message */}
+          {captureError && (
+            <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 flex items-start gap-3 animate-fadeIn">
+              <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-rose-600" />
+              <div>
+                <span className="font-bold block mb-0.5">Capture Error</span>
+                {captureError}
+              </div>
             </div>
           )}
+
+          {/* Step-by-Step Instructions */}
+          <div className="bg-slate-50 rounded-2xl p-5 border border-slate-100 space-y-3">
+            <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
+              <Globe className="w-4 h-4 text-indigo-600" />
+              <span>How to capture Google Meet live audio:</span>
+            </div>
+            <ol className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-600">
+              <li className="p-3 bg-white rounded-xl border border-slate-200/70 flex items-start gap-2.5">
+                <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 font-bold flex items-center justify-center shrink-0 mt-0.5 text-[11px]">1</span>
+                <span>Open your <strong>Google Meet</strong> call in another Chrome or Edge tab and join the meeting.</span>
+              </li>
+              <li className="p-3 bg-white rounded-xl border border-slate-200/70 flex items-start gap-2.5">
+                <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 font-bold flex items-center justify-center shrink-0 mt-0.5 text-[11px]">2</span>
+                <span>Return here and click <strong>"Start Google Meet Capture"</strong>.</span>
+              </li>
+              <li className="p-3 bg-white rounded-xl border border-slate-200/70 flex items-start gap-2.5">
+                <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 font-bold flex items-center justify-center shrink-0 mt-0.5 text-[11px]">3</span>
+                <span>In the browser sharing popup, select your <strong>Google Meet tab</strong>.</span>
+              </li>
+              <li className="p-3 bg-white rounded-xl border border-emerald-200 bg-emerald-50/30 flex items-start gap-2.5">
+                <span className="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center shrink-0 mt-0.5 text-[11px]">4</span>
+                <span className="font-semibold text-slate-800">✅ Check the "Share tab audio" toggle (Required).</span>
+              </li>
+            </ol>
+          </div>
         </div>
       )}
 
-      {/* ── Top Banner & Status (shown once session is active) ────────── */}
+      {/* ── Top Status Banner (when session is active or processing) ──── */}
       {(session || connectionStatus !== 'idle') && (
         <div className="bg-white p-5 sm:p-6 rounded-3xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
-                {session?.title || (source === SOURCE_GOOGLE_MEET ? 'Google Meet — Live Session' : 'Live Zoom Meeting')}
+                {session?.title || 'Google Meet — Live Session'}
               </h1>
 
-              {/* Source badge */}
-              {source === SOURCE_GOOGLE_MEET && (
-                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-gradient-to-r from-blue-100 to-green-100 text-indigo-700 border border-indigo-200">
-                  Google Meet
-                </span>
-              )}
-              {source === SOURCE_ZOOM && (
-                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
-                  Zoom RTMS
-                </span>
-              )}
-
               {/* Status badges */}
-              {connectionStatus === 'live' && (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 animate-pulse">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" /> LIVE
-                </span>
-              )}
               {connectionStatus === 'capturing' && (
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 animate-pulse">
                   <span className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" /> CAPTURING
                 </span>
               )}
-              {connectionStatus === 'waiting' && (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-                  {source === SOURCE_ZOOM ? 'WAITING FOR ZOOM' : 'WAITING'}
+              {connectionStatus === 'live' && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" /> LIVE
                 </span>
               )}
               {connectionStatus === 'processing' && (
@@ -868,9 +662,9 @@ export const LiveMeetingPage = () => {
             <p className="text-xs text-slate-500">{statusMessage}</p>
           </div>
 
-          {/* Live Metrics & Action buttons */}
+          {/* Metrics & Action Buttons */}
           <div className="flex flex-wrap items-center gap-3">
-            {(connectionStatus === 'live' || connectionStatus === 'capturing') && (
+            {isActivelyRunning && (
               <div className="flex items-center gap-4 bg-slate-50 px-4 py-2 rounded-2xl border border-slate-200/80 text-xs font-semibold text-slate-700">
                 <div className="flex items-center gap-1.5">
                   <Clock className="w-4 h-4 text-slate-400" />
@@ -896,13 +690,6 @@ export const LiveMeetingPage = () => {
               </Button>
             )}
 
-            {connectionStatus === 'waiting' && source === SOURCE_ZOOM && (
-              <Button variant="secondary" size="sm" icon={RefreshCw} onClick={checkZoomAndInitRtms}>
-                Refresh Status
-              </Button>
-            )}
-
-            {/* Back to source selector */}
             {!isActivelyRunning && connectionStatus !== 'processing' && (
               <Button
                 variant="secondary"
@@ -927,59 +714,11 @@ export const LiveMeetingPage = () => {
         </div>
       )}
 
-      {/* ── Zoom-specific: not connected prompt ──────────────────────── */}
-      {source === SOURCE_ZOOM && session && !zoomStatus.connected && (
-        <div className="bg-white p-8 sm:p-12 rounded-3xl border border-slate-200/80 shadow-xs text-center space-y-6 max-w-xl mx-auto">
-          <div className="w-16 h-16 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
-            <Video className="w-8 h-8" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold text-slate-900">Connect Zoom to Start Live Summaries</h2>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Zoom RTMS requires your Zoom account to be connected.
-            </p>
-          </div>
-          <Button variant="primary" size="lg" icon={Video} onClick={handleConnectZoom}>
-            Connect Zoom Account
-          </Button>
-        </div>
-      )}
-
-      {/* ── Zoom Waiting state ────────────────────────────────────────── */}
-      {source === SOURCE_ZOOM && session && zoomStatus.connected && connectionStatus === 'waiting' && transcriptChunks.length === 0 && (
-        <div className="bg-white p-8 sm:p-12 rounded-3xl border border-slate-200/80 shadow-xs text-center space-y-6 max-w-2xl mx-auto">
-          <div className="relative w-20 h-20 mx-auto flex items-center justify-center">
-            <div className="absolute inset-0 rounded-full bg-indigo-100 animate-ping opacity-60" />
-            <div className="relative w-16 h-16 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-lg">
-              <Radio className="w-8 h-8 animate-pulse" />
-            </div>
-          </div>
-          <div className="space-y-2 max-w-md mx-auto">
-            <h2 className="text-xl font-bold text-slate-900">Waiting for Live Zoom Meeting...</h2>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Your Zoom account (<span className="font-semibold text-slate-700">{zoomStatus.email || 'Connected'}</span>) is ready.
-              Start or join a Zoom meeting with RTMS/Captions enabled.
-            </p>
-          </div>
-          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 max-w-md mx-auto text-left space-y-2 text-xs text-slate-600">
-            <div className="flex items-center gap-2 font-bold text-slate-800">
-              <Sparkles className="w-4 h-4 text-indigo-600" /> <span>How it works:</span>
-            </div>
-            <ol className="list-decimal list-inside space-y-1 text-slate-500">
-              <li>Open Zoom and start or join your meeting.</li>
-              <li>Zoom RTMS streams live transcript data to your backend.</li>
-              <li>Gemini analyzes spoken dialogue incrementally in real time.</li>
-              <li>Live summary, decisions, and action items appear on this screen.</li>
-            </ol>
-          </div>
-        </div>
-      )}
-
       {/* ── Main Live Dual-Panel Interface ───────────────────────────── */}
       {session && (connectionStatus === 'live' || connectionStatus === 'capturing' || transcriptChunks.length > 0 || insights.summary) && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
 
-          {/* Left: Live Transcript Panel */}
+          {/* Left Column: Real-Time Transcript Stream */}
           <div className="lg:col-span-5 bg-white rounded-3xl border border-slate-200/80 shadow-xs flex flex-col h-[650px] overflow-hidden">
             <div className="p-4 sm:px-5 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/50">
               <div className="flex items-center gap-2">
@@ -1021,25 +760,12 @@ export const LiveMeetingPage = () => {
             <div className="flex-1 p-4 sm:p-5 overflow-y-auto space-y-4 font-sans">
               {filteredChunks.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 space-y-2">
-                  {(connectionStatus === 'capturing' || connectionStatus === 'live') ? (
-                    <>
-                      <Radio className="w-6 h-6 animate-pulse text-indigo-400" />
-                      <p className="text-xs">
-                        {source === SOURCE_GOOGLE_MEET
-                          ? 'Listening for speech in Google Meet audio...'
-                          : 'Listening for spoken dialogue...'}
-                      </p>
-                      {source === SOURCE_GOOGLE_MEET && !sttConfigured && (
-                        <p className="text-[11px] text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
-                          STT not configured — transcription inactive
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <FileText className="w-6 h-6 text-slate-300" />
-                      <p className="text-xs">No transcript yet.</p>
-                    </>
+                  <Radio className="w-6 h-6 animate-pulse text-indigo-400" />
+                  <p className="text-xs">Listening for speech in Google Meet audio...</p>
+                  {!sttConfigured && (
+                    <p className="text-[11px] text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
+                      STT API key not set on server — transcription inactive
+                    </p>
                   )}
                 </div>
               ) : (
@@ -1062,7 +788,7 @@ export const LiveMeetingPage = () => {
             </div>
           </div>
 
-          {/* Right: Live AI Intelligence Panel */}
+          {/* Right Column: Live AI Intelligence */}
           <div className="lg:col-span-7 space-y-5">
             {/* Live Summary */}
             <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs space-y-3">
@@ -1179,7 +905,7 @@ export const LiveMeetingPage = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs space-y-3">
                 <div className="flex items-center gap-2 text-slate-900">
-                  <Tag className="w-4 h-4 text-indigo-600" />
+                  <Info className="w-4 h-4 text-indigo-600" />
                   <h3 className="text-xs font-bold uppercase tracking-wider">Discussion Topics</h3>
                 </div>
                 {insights.topics?.length > 0 ? (
@@ -1223,9 +949,7 @@ export const LiveMeetingPage = () => {
             <div className="text-center space-y-1.5">
               <h3 className="text-lg font-bold text-slate-900">End &amp; Finalize Meeting?</h3>
               <p className="text-xs text-slate-500 leading-relaxed">
-                {source === SOURCE_GOOGLE_MEET
-                  ? 'This will stop tab audio capture, run the final Gemini summary, and save the meeting to your History.'
-                  : 'This will finalize the live stream, generate the consolidated Gemini summary, and save the meeting permanently to your History.'}
+                This will stop audio capture, run the final Gemini AI consolidation, and save the complete summary and action items to your Meeting History.
               </p>
             </div>
             <div className="flex items-center justify-end gap-3 pt-2">
@@ -1235,7 +959,7 @@ export const LiveMeetingPage = () => {
                 size="sm"
                 icon={StopCircle}
                 loading={isFinalizing}
-                onClick={source === SOURCE_GOOGLE_MEET ? handleStopGoogleMeetCapture : handleStopZoomMeeting}
+                onClick={handleStopGoogleMeetCapture}
               >
                 End Meeting
               </Button>

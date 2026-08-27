@@ -9,7 +9,8 @@ import {
   CheckSquare, 
   Layers,
   ArrowRight,
-  Video
+  Video,
+  Radio,
 } from 'lucide-react';
 import { api } from '../lib/apiClient';
 import { Button } from '../components/Button';
@@ -153,7 +154,13 @@ export const HistoryPage = () => {
                   {meeting.source === 'zoom' && (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
                       <Video className="w-3 h-3 text-blue-600" />
-                      Zoom
+                      Zoom Cloud
+                    </span>
+                  )}
+                  {meeting.source === 'google_meet' && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <Radio className="w-3 h-3 text-emerald-600" />
+                      Google Meet
                     </span>
                   )}
                   <StatusBadge status={meeting.status} />

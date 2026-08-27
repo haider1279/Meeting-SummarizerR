@@ -20,7 +20,7 @@ export const Sidebar = () => {
   const navItems = [
     { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { to: '/upload', label: 'New Meeting', icon: PlusCircle, highlight: true },
-    { to: '/live', label: 'Live Zoom', icon: Radio, isLive: true },
+    { to: '/live', label: 'Google Meet Live', icon: Radio, isLive: true },
     { to: '/history', label: 'Past Meetings', icon: History },
     { to: '/action-items', label: 'Action Items', icon: CheckSquare },
     { to: '/settings', label: 'Settings', icon: Settings },

@@ -26,7 +26,7 @@ Endpoints:
   WebSocket  /api/google-meet/ws/{session_id}                   Audio input + event output
 
 SECURITY NOTES:
-  - JWT token is passed as ?token= query param (same pattern as live_zoom.py)
+  - JWT token is passed as ?token= query param for WebSocket authentication
   - The token is NEVER logged — only the session_id and user_id are logged
   - GOOGLE_SPEECH_API_KEY is never included in any log output
   - Base64 audio payload is not logged (too large and contains raw user audio)
@@ -52,7 +52,7 @@ from fastapi import (
 
 from app.config import settings
 from app.dependencies import get_current_user, get_supabase_client
-from app.services import rtms_service, stt_service, supabase_service
+from app.services import live_session_service, stt_service, supabase_service
 
 logger = logging.getLogger("google_meet_router")
 
@@ -176,9 +176,9 @@ async def stop_google_meet_session(
             detail="Session not found or access denied.",
         )
 
-    runtime = rtms_service.rtms_manager.get_runtime(session_id)
+    runtime = live_session_service.live_session_manager.get_runtime(session_id)
     if runtime and not runtime.is_finalizing:
-        asyncio.create_task(rtms_service.finalize_live_meeting(runtime))
+        asyncio.create_task(live_session_service.finalize_live_meeting(runtime))
         logger.info(f"[GOOGLE_MEET] Finalization triggered for session {session_id}")
         return {"message": "Meeting finalization started. Summary will appear in History shortly."}
 
@@ -260,12 +260,10 @@ async def google_meet_websocket(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    # 3. Get or create in-memory runtime (shared with RTMS manager for code reuse)
-    runtime = await rtms_service.rtms_manager.get_or_create_runtime(
+    # 3. Get or create in-memory runtime
+    runtime = await live_session_service.live_session_manager.get_or_create_runtime(
         session_id=session_id,
         user_id=user_id,
-        zoom_meeting_id=sess_db.get("zoom_meeting_id", "google_meet_capture"),
-        zoom_meeting_uuid=sess_db.get("zoom_meeting_uuid"),
         title=sess_db.get("title") or "Google Meet — Live Session",
     )
     runtime.add_subscriber(websocket)
@@ -366,7 +364,7 @@ async def google_meet_websocket(
                     )
 
                     timestamp_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    await rtms_service.ingest_transcript_packet(
+                    await live_session_service.ingest_transcript_packet(
                         runtime=runtime,
                         speaker_id=None,
                         speaker_name="Speaker",
@@ -382,7 +380,7 @@ async def google_meet_websocket(
             # --- Manual stop from frontend ---
             elif action == "stop":
                 logger.info(f"[GOOGLE_MEET WS] Stop signal received for session {session_id}")
-                asyncio.create_task(rtms_service.finalize_live_meeting(runtime))
+                asyncio.create_task(live_session_service.finalize_live_meeting(runtime))
 
             else:
                 logger.debug(f"[GOOGLE_MEET WS] Unknown action: {action}")

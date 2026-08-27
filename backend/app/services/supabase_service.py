@@ -429,85 +429,17 @@ def delete_zoom_connection(user_id: str) -> bool:
     return len(result.data) > 0
 
 
-def get_zoom_connection_by_zoom_user_id(zoom_user_id: str) -> Optional[dict]:
-    """
-    Find Zoom connection by Zoom's internal user ID.
-    Used by Webhooks to map an incoming RTMS event to the appropriate Supabase user.
-    """
-    if not zoom_user_id:
-        return None
-    supabase = get_client()
-    result = (
-        supabase.table("zoom_connections")
-        .select("*")
-        .eq("zoom_user_id", zoom_user_id)
-        .limit(1)
-        .execute()
-    )
-    return result.data[0] if result.data else None
-
-
-def find_zoom_connection_for_webhook(
-    zoom_user_id: Optional[str] = None,
-    zoom_email: Optional[str] = None,
-) -> Optional[dict]:
-    """
-    Find Zoom connection for webhook mapping by zoom_user_id or zoom_email.
-    If no direct match is found and there is exactly one connected Zoom user in the database,
-    falls back to that user.
-    """
-    supabase = get_client()
-
-    if zoom_user_id:
-        res = (
-            supabase.table("zoom_connections")
-            .select("*")
-            .eq("zoom_user_id", zoom_user_id)
-            .eq("status", "connected")
-            .limit(1)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]
-
-    if zoom_email:
-        res = (
-            supabase.table("zoom_connections")
-            .select("*")
-            .ilike("zoom_email", zoom_email.strip())
-            .eq("status", "connected")
-            .limit(1)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]
-
-    # Fallback: if single connected account exists
-    res = (
-        supabase.table("zoom_connections")
-        .select("*")
-        .eq("status", "connected")
-        .limit(2)
-        .execute()
-    )
-    if res.data and len(res.data) == 1:
-        return res.data[0]
-
-    return None
-
-
-
 # ============================================================
-# Live Zoom RTMS session & transcript operations
+# Live Google Meet session & transcript operations
 # ============================================================
 
 def create_live_session(
     user_id: str,
-    zoom_meeting_id: str,
+    zoom_meeting_id: str = "google_meet_capture",
     zoom_meeting_uuid: Optional[str] = None,
     rtms_stream_id: Optional[str] = None,
-    title: str = "Live Zoom Meeting",
-    source: str = "zoom_rtms",
+    title: str = "Google Meet — Live Session",
+    source: str = "google_meet",
 ) -> dict:
     """Create a new live meeting session row."""
     supabase = get_client()
@@ -532,7 +464,6 @@ def create_live_session(
     return result.data[0]
 
 
-
 def get_live_session(session_id: str, user_id: Optional[str] = None) -> Optional[dict]:
     """Fetch a live session by ID, optionally scoping to a specific user."""
     supabase = get_client()
@@ -543,27 +474,10 @@ def get_live_session(session_id: str, user_id: Optional[str] = None) -> Optional
     return result.data[0] if result.data else None
 
 
-def get_active_live_session(user_id: str) -> Optional[dict]:
-    """
-    Fetch the currently active (waiting, live, or processing) live meeting session for a user.
-    """
-    supabase = get_client()
-    result = (
-        supabase.table("live_meeting_sessions")
-        .select("*")
-        .eq("user_id", user_id)
-        .in_("status", ["waiting", "live", "processing"])
-        .order("created_at", desc=True)
-        .limit(1)
-        .execute()
-    )
-    return result.data[0] if result.data else None
-
-
 def get_active_google_meet_session(user_id: str) -> Optional[dict]:
     """
     Fetch the currently active Google Meet live session for a user.
-    Scoped to source='google_meet' so it doesn't return Zoom RTMS sessions.
+    Scoped to source='google_meet'.
     """
     supabase = get_client()
     result = (
@@ -578,56 +492,6 @@ def get_active_google_meet_session(user_id: str) -> Optional[dict]:
     )
     return result.data[0] if result.data else None
 
-
-
-
-def find_live_session_by_zoom_info(
-    zoom_meeting_id: Optional[str] = None,
-    zoom_meeting_uuid: Optional[str] = None,
-    rtms_stream_id: Optional[str] = None,
-) -> Optional[dict]:
-    """
-    Find an active live session matching Zoom identifiers.
-    """
-    supabase = get_client()
-    if zoom_meeting_uuid:
-        res = (
-            supabase.table("live_meeting_sessions")
-            .select("*")
-            .eq("zoom_meeting_uuid", zoom_meeting_uuid)
-            .in_("status", ["waiting", "live", "processing"])
-            .limit(1)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]
-
-    if rtms_stream_id:
-        res = (
-            supabase.table("live_meeting_sessions")
-            .select("*")
-            .eq("rtms_stream_id", rtms_stream_id)
-            .in_("status", ["waiting", "live", "processing"])
-            .limit(1)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]
-
-    if zoom_meeting_id:
-        res = (
-            supabase.table("live_meeting_sessions")
-            .select("*")
-            .eq("zoom_meeting_id", zoom_meeting_id)
-            .in_("status", ["waiting", "live", "processing"])
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]
-
-    return None
 
 
 def update_live_session(session_id: str, fields: dict) -> Optional[dict]:

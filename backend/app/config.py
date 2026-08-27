@@ -34,7 +34,7 @@ class Settings:
         # Maximum audio file size the backend will accept (100 MB in bytes)
         self.MAX_AUDIO_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 
-        # Zoom Integration (Optional during local dev / until configured in Render)
+        # Zoom Integration (OAuth & Cloud Recordings)
         self.ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
         self.ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
         self.ZOOM_REDIRECT_URI = os.getenv(
@@ -42,12 +42,18 @@ class Settings:
             "https://meeting-summarizer-rfrr.onrender.com/api/zoom/callback"
         )
         self.ZOOM_TOKEN_ENCRYPTION_KEY = os.getenv("ZOOM_TOKEN_ENCRYPTION_KEY", "")
-        # Zoom Webhook Secret Token (from Event Subscriptions in Zoom Marketplace app)
-        self.ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN", "")
 
-        # Live buffering configuration (used by both Zoom RTMS and Google Meet capture)
-        self.RTMS_BUFFER_FLUSH_INTERVAL_SECONDS = int(os.getenv("RTMS_BUFFER_FLUSH_INTERVAL_SECONDS", "25"))
-        self.RTMS_MIN_WORDS_PER_CHUNK = int(os.getenv("RTMS_MIN_WORDS_PER_CHUNK", "30"))
+        # Live meeting transcript buffering configuration (for Google Meet live capture)
+        self.LIVE_BUFFER_FLUSH_INTERVAL_SECONDS = int(
+            os.getenv("LIVE_BUFFER_FLUSH_INTERVAL_SECONDS")
+            or os.getenv("RTMS_BUFFER_FLUSH_INTERVAL_SECONDS")
+            or "25"
+        )
+        self.LIVE_MIN_WORDS_PER_CHUNK = int(
+            os.getenv("LIVE_MIN_WORDS_PER_CHUNK")
+            or os.getenv("RTMS_MIN_WORDS_PER_CHUNK")
+            or "30"
+        )
 
         # Google Meet / Google Cloud Speech-to-Text (optional — free 60 min/month)
         # Falls back to GEMINI_API_KEY if not explicitly set (same Google Cloud project)
@@ -66,11 +72,6 @@ class Settings:
     def is_zoom_configured(self) -> bool:
         """Check if minimum required Zoom OAuth configuration is present."""
         return bool(self.ZOOM_CLIENT_ID and self.ZOOM_CLIENT_SECRET)
-
-    @property
-    def is_rtms_configured(self) -> bool:
-        """Check if minimum required Zoom RTMS webhook configuration is present."""
-        return bool(self.is_zoom_configured and self.ZOOM_WEBHOOK_SECRET_TOKEN)
 
     @property
     def is_google_stt_configured(self) -> bool:

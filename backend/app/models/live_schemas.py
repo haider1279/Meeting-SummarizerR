@@ -1,11 +1,10 @@
 """
-rtms_schemas.py — Pydantic Schemas for Zoom Realtime Media Streams (RTMS) Live Sessions.
+live_schemas.py — Pydantic Schemas for Live Meeting Sessions & AI Insights.
 
 Defines the structure for:
-- Live session states and updates
+- Live session states and updates (Google Meet live capture)
 - Live transcript chunks and speaker attribution
 - Incremental structured AI insights (summary, key points, decisions, action items, questions, topics, risks)
-- Zoom webhook payloads and validation events
 - Real-time WebSocket messages streamed to the frontend
 """
 
@@ -45,7 +44,7 @@ class LiveInsightsData(BaseModel):
 # ============================================================
 
 class LiveTranscriptChunk(BaseModel):
-    """A normalized live transcript chunk received from Zoom RTMS."""
+    """A normalized live transcript chunk received from speech-to-text."""
     speaker_id: Optional[str] = None
     speaker_name: str = "Speaker"
     start_time: Optional[str] = None
@@ -65,11 +64,9 @@ class LiveMeetingSessionResponse(BaseModel):
     """Public representation of a live meeting session."""
     id: str
     user_id: str
-    zoom_meeting_id: str
-    zoom_meeting_uuid: Optional[str] = None
-    rtms_stream_id: Optional[str] = None
-    title: str = "Live Zoom Meeting"
-    status: str = "waiting" # waiting | live | processing | completed | disconnected | failed
+    title: str = "Google Meet — Live Session"
+    source: str = "google_meet"
+    status: str = "waiting"  # waiting | live | processing | completed | disconnected | failed
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     last_transcript_at: Optional[str] = None
@@ -93,39 +90,7 @@ class LiveSessionStatus(BaseModel):
 
 class WebSocketEvent(BaseModel):
     """Standardized event packet broadcast over WebSocket to frontend."""
-    type: str # 'status' | 'transcript' | 'insights' | 'meeting_ended' | 'error'
+    type: str  # 'status' | 'transcript' | 'insights' | 'meeting_ended' | 'error'
     session_id: str
     data: Dict[str, Any]
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
-
-
-# ============================================================
-# Zoom Webhook Schemas
-# ============================================================
-
-class ZoomWebhookObject(BaseModel):
-    id: Optional[str] = None
-    uuid: Optional[str] = None
-    meeting_id: Optional[str] = None
-    meeting_uuid: Optional[str] = None
-    host_id: Optional[str] = None
-    topic: Optional[str] = None
-    rtms_stream_id: Optional[str] = None
-    server_urls: Optional[Any] = None # Can be string or list of strings
-
-
-class ZoomWebhookPayload(BaseModel):
-    account_id: Optional[str] = None
-    plainToken: Optional[str] = None # Used in endpoint.url_validation
-    object: Optional[ZoomWebhookObject] = None
-    # Support flattened properties if sent directly in payload
-    meeting_uuid: Optional[str] = None
-    meeting_id: Optional[str] = None
-    rtms_stream_id: Optional[str] = None
-    server_urls: Optional[Any] = None
-
-
-class ZoomWebhookEvent(BaseModel):
-    event: str
-    event_ts: Optional[int] = None
-    payload: Optional[ZoomWebhookPayload] = None
