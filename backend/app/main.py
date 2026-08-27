@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import meetings, action_items, zoom, live_zoom
+from app.routers import meetings, action_items, zoom, live_zoom, google_meet
 
 # Configure server-side logging
 logging.basicConfig(
@@ -68,6 +68,14 @@ async def startup_event():
     else:
         logger.info("Zoom RTMS Webhook Secret Token not set (ZOOM_WEBHOOK_SECRET_TOKEN).")
 
+    if settings.is_google_stt_configured:
+        logger.info("Google Meet Live Capture: STT configured (GOOGLE_SPEECH_API_KEY set).")
+    else:
+        logger.info(
+            "Google Meet Live Capture: GOOGLE_SPEECH_API_KEY not set — "
+            "STT will fall back to GEMINI_API_KEY if available."
+        )
+
     # Safe route diagnostic logging
     registered_paths = sorted(set([
         getattr(route, "path", str(route)) 
@@ -106,6 +114,8 @@ app.include_router(action_items.router)
 app.include_router(zoom.router, prefix="/api/zoom")
 # Live Zoom RTMS Router
 app.include_router(live_zoom.router)
+# Google Meet Live Capture Router
+app.include_router(google_meet.router)
 
 
 

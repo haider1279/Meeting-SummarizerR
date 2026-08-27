@@ -507,6 +507,7 @@ def create_live_session(
     zoom_meeting_uuid: Optional[str] = None,
     rtms_stream_id: Optional[str] = None,
     title: str = "Live Zoom Meeting",
+    source: str = "zoom_rtms",
 ) -> dict:
     """Create a new live meeting session row."""
     supabase = get_client()
@@ -517,6 +518,7 @@ def create_live_session(
         "rtms_stream_id": rtms_stream_id,
         "title": title,
         "status": "waiting",
+        "source": source,
         "current_insights": {
             "key_points": [],
             "decisions": [],
@@ -528,6 +530,7 @@ def create_live_session(
     }
     result = supabase.table("live_meeting_sessions").insert(data).execute()
     return result.data[0]
+
 
 
 def get_live_session(session_id: str, user_id: Optional[str] = None) -> Optional[dict]:
@@ -555,6 +558,27 @@ def get_active_live_session(user_id: str) -> Optional[dict]:
         .execute()
     )
     return result.data[0] if result.data else None
+
+
+def get_active_google_meet_session(user_id: str) -> Optional[dict]:
+    """
+    Fetch the currently active Google Meet live session for a user.
+    Scoped to source='google_meet' so it doesn't return Zoom RTMS sessions.
+    """
+    supabase = get_client()
+    result = (
+        supabase.table("live_meeting_sessions")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("source", "google_meet")
+        .in_("status", ["waiting", "live", "processing"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
 
 
 def find_live_session_by_zoom_info(

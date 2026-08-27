@@ -45,9 +45,16 @@ class Settings:
         # Zoom Webhook Secret Token (from Event Subscriptions in Zoom Marketplace app)
         self.ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN", "")
 
-        # Live RTMS buffering configuration
+        # Live buffering configuration (used by both Zoom RTMS and Google Meet capture)
         self.RTMS_BUFFER_FLUSH_INTERVAL_SECONDS = int(os.getenv("RTMS_BUFFER_FLUSH_INTERVAL_SECONDS", "25"))
         self.RTMS_MIN_WORDS_PER_CHUNK = int(os.getenv("RTMS_MIN_WORDS_PER_CHUNK", "30"))
+
+        # Google Meet / Google Cloud Speech-to-Text (optional — free 60 min/month)
+        # Falls back to GEMINI_API_KEY if not explicitly set (same Google Cloud project)
+        self.GOOGLE_SPEECH_API_KEY = os.getenv(
+            "GOOGLE_SPEECH_API_KEY",
+            os.getenv("GEMINI_API_KEY", "")
+        )
 
         # State signing secret (falls back to Supabase service role key or Zoom secret if not set)
         self.STATE_SECRET_KEY = os.getenv(
@@ -64,6 +71,11 @@ class Settings:
     def is_rtms_configured(self) -> bool:
         """Check if minimum required Zoom RTMS webhook configuration is present."""
         return bool(self.is_zoom_configured and self.ZOOM_WEBHOOK_SECRET_TOKEN)
+
+    @property
+    def is_google_stt_configured(self) -> bool:
+        """Check if Google Cloud Speech-to-Text API key is available."""
+        return bool(self.GOOGLE_SPEECH_API_KEY)
 
 
     @staticmethod

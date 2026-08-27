@@ -43,13 +43,29 @@ apiClient.interceptors.response.use(
   }
 );
 
-// Helper to resolve WebSocket endpoint URL based on API_BASE_URL
+// -------------------------------------------------------
+// WebSocket URL Helpers
+// -------------------------------------------------------
+
+/** WebSocket URL for Zoom RTMS live session streaming. */
 export const getWebSocketUrl = (sessionId, token) => {
   const base = API_BASE_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
   return `${base}/api/live-zoom/ws/${sessionId}?token=${encodeURIComponent(token || '')}`;
 };
 
-// Convenience API methods for frontend pages
+/**
+ * WebSocket URL for Google Meet browser-tab audio capture.
+ * Same auth pattern as Zoom RTMS — Supabase JWT in ?token= query param.
+ * The token is encoded to handle any special characters.
+ */
+export const getGoogleMeetWebSocketUrl = (sessionId, token) => {
+  const base = API_BASE_URL.replace(/^http/, 'ws').replace(/\/+$/, '');
+  return `${base}/api/google-meet/ws/${sessionId}?token=${encodeURIComponent(token || '')}`;
+};
+
+// -------------------------------------------------------
+// Convenience API methods
+// -------------------------------------------------------
 export const api = {
   // Health
   checkHealth: () => apiClient.get('/health'),
@@ -84,11 +100,17 @@ export const api = {
   summarizeZoomRecording: (meetingUuid) =>
     apiClient.post(`/api/zoom/recordings/${encodeURIComponent(meetingUuid)}/summarize`),
 
-  // Live Zoom RTMS Summarization
+  // Live Zoom RTMS Summarization (existing — unchanged)
   getActiveLiveSession: () => apiClient.get('/api/live-zoom/active'),
   createLiveSession: (data) => apiClient.post('/api/live-zoom/session', data || {}),
   getLiveSession: (sessionId) => apiClient.get(`/api/live-zoom/sessions/${sessionId}`),
   getLiveTranscript: (sessionId) => apiClient.get(`/api/live-zoom/sessions/${sessionId}/transcript`),
   stopLiveSession: (sessionId) => apiClient.post(`/api/live-zoom/sessions/${sessionId}/stop`),
-};
 
+  // Google Meet Live Capture (browser tab audio)
+  getActiveGoogleMeetSession: () => apiClient.get('/api/google-meet/active'),
+  createGoogleMeetSession: (data) => apiClient.post('/api/google-meet/session', data || {}),
+  getGoogleMeetSession: (sessionId) => apiClient.get(`/api/google-meet/sessions/${sessionId}`),
+  getGoogleMeetTranscript: (sessionId) => apiClient.get(`/api/google-meet/sessions/${sessionId}/transcript`),
+  stopGoogleMeetSession: (sessionId) => apiClient.post(`/api/google-meet/sessions/${sessionId}/stop`),
+};
