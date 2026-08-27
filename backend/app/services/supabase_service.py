@@ -441,7 +441,15 @@ def create_live_session(
     title: str = "Google Meet — Live Session",
     source: str = "google_meet",
 ) -> dict:
-    """Create a new live meeting session row."""
+    """
+    Create a new live meeting session row.
+
+    IMPORTANT: The `source` column requires the following migration to have been
+    run in Supabase before this function will succeed:
+        ALTER TABLE public.live_meeting_sessions
+            ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'google_meet';
+    If that column is missing, this function raises a RuntimeError with a clear message.
+    """
     supabase = get_client()
     data = {
         "user_id": user_id,
@@ -460,8 +468,21 @@ def create_live_session(
             "risks": [],
         },
     }
-    result = supabase.table("live_meeting_sessions").insert(data).execute()
-    return result.data[0]
+    try:
+        result = supabase.table("live_meeting_sessions").insert(data).execute()
+        if not result.data:
+            raise RuntimeError("Live session insert returned no data.")
+        return result.data[0]
+    except Exception as exc:
+        exc_str = str(exc)
+        # Detect the common schema-mismatch: source column not yet added via migration
+        if "source" in exc_str and ("does not exist" in exc_str or "column" in exc_str.lower()):
+            raise RuntimeError(
+                "Database schema is missing the 'source' column on live_meeting_sessions. "
+                "Please run the Supabase migration: "
+                "ALTER TABLE public.live_meeting_sessions ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'google_meet';"
+            ) from exc
+        raise RuntimeError(f"Failed to create live session in database: {exc_str}") from exc
 
 
 def get_live_session(session_id: str, user_id: Optional[str] = None) -> Optional[dict]:
@@ -478,19 +499,36 @@ def get_active_google_meet_session(user_id: str) -> Optional[dict]:
     """
     Fetch the currently active Google Meet live session for a user.
     Scoped to source='google_meet'.
+
+    Returns None (instead of raising) if the source column doesn't exist yet —
+    callers handle the None case gracefully.
     """
     supabase = get_client()
-    result = (
-        supabase.table("live_meeting_sessions")
-        .select("*")
-        .eq("user_id", user_id)
-        .eq("source", "google_meet")
-        .in_("status", ["waiting", "live", "processing"])
-        .order("created_at", desc=True)
-        .limit(1)
-        .execute()
-    )
-    return result.data[0] if result.data else None
+    try:
+        result = (
+            supabase.table("live_meeting_sessions")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("source", "google_meet")
+            .in_("status", ["waiting", "live", "processing"])
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception as exc:
+        exc_str = str(exc)
+        if "source" in exc_str and ("does not exist" in exc_str or "column" in exc_str.lower()):
+            # Migration not yet applied — treat as no active session
+            import logging as _logging
+            _logging.getLogger("supabase_service").warning(
+                "[LIVE_SESSION] 'source' column missing on live_meeting_sessions — "
+                "run the Supabase migration and redeploy."
+            )
+            return None
+        raise
+
+
 
 
 

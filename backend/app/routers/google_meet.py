@@ -109,12 +109,20 @@ async def create_google_meet_session(
         )
         return existing
 
-    session = supabase_service.create_live_session(
-        user_id=user_id,
-        zoom_meeting_id="google_meet_capture",
-        title=title,
-        source="google_meet",
-    )
+    session = None
+    try:
+        session = supabase_service.create_live_session(
+            user_id=user_id,
+            zoom_meeting_id="google_meet_capture",
+            title=title,
+            source="google_meet",
+        )
+    except RuntimeError as exc:
+        logger.error(f"[GOOGLE_MEET] Failed to create live session for user {user_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
     logger.info(f"[GOOGLE_MEET] Session created: {session['id']} (User: {user_id})")
     return session
 

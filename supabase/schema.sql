@@ -278,8 +278,9 @@ CREATE TABLE IF NOT EXISTS public.live_meeting_sessions (
     zoom_meeting_id     text NOT NULL,
     zoom_meeting_uuid   text,
     rtms_stream_id      text,
-    title               text NOT NULL DEFAULT 'Live Zoom Meeting',
+    title               text NOT NULL DEFAULT 'Live Meeting',
     status              text NOT NULL DEFAULT 'waiting', -- 'waiting' | 'live' | 'processing' | 'completed' | 'disconnected' | 'failed'
+    source              text NOT NULL DEFAULT 'google_meet', -- 'google_meet' (browser tab capture)
     started_at          timestamptz DEFAULT now(),
     ended_at            timestamptz,
     last_transcript_at  timestamptz,
@@ -295,6 +296,8 @@ CREATE INDEX IF NOT EXISTS idx_live_sessions_user_id ON public.live_meeting_sess
 CREATE INDEX IF NOT EXISTS idx_live_sessions_zoom_uuid ON public.live_meeting_sessions(zoom_meeting_uuid);
 CREATE INDEX IF NOT EXISTS idx_live_sessions_rtms_stream_id ON public.live_meeting_sessions(rtms_stream_id);
 CREATE INDEX IF NOT EXISTS idx_live_sessions_created_at ON public.live_meeting_sessions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_live_sessions_source ON public.live_meeting_sessions(user_id, source);
+
 
 ALTER TABLE public.live_meeting_sessions ENABLE ROW LEVEL SECURITY;
 
