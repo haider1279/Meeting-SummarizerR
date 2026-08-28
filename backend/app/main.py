@@ -65,13 +65,9 @@ async def startup_event():
 
 
 
-    if settings.is_google_stt_configured:
-        logger.info("Google Meet Live Capture: STT configured (GOOGLE_SPEECH_API_KEY set).")
-    else:
-        logger.info(
-            "Google Meet Live Capture: GOOGLE_SPEECH_API_KEY not set — "
-            "STT will fall back to GEMINI_API_KEY if available."
-        )
+    logger.info(
+        f"Google Meet Live Capture: Gemini Audio Transcription ready (model: {settings.GEMINI_MODEL})."
+    )
 
     # Safe route diagnostic logging
     registered_paths = sorted(set([

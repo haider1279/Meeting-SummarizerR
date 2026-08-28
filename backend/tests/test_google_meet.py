@@ -4,71 +4,58 @@ from unittest.mock import patch, MagicMock
 
 from app.main import app
 from app.models.live_schemas import LiveActionItem, LiveInsightsData
-from app.services import live_session_service, stt_service, zoom_service
+from app.services import live_session_service, stt_service
 
 
-class TestGoogleMeetAndSTT(unittest.TestCase):
-    def test_resolve_encoding(self):
-        self.assertEqual(stt_service._resolve_encoding("audio/webm"), "WEBM_OPUS")
-        self.assertEqual(stt_service._resolve_encoding("audio/webm;codecs=opus"), "WEBM_OPUS")
-        self.assertEqual(stt_service._resolve_encoding("audio/ogg;codecs=opus"), "OGG_OPUS")
-        self.assertEqual(stt_service._resolve_encoding("audio/wav"), "LINEAR16")
-        self.assertEqual(stt_service._resolve_encoding("audio/mp4"), "MP3")
+class TestGoogleMeetAndGeminiSTT(unittest.TestCase):
+    def test_normalize_mime_type(self):
+        self.assertEqual(stt_service._normalize_mime_type("audio/webm;codecs=opus"), "audio/webm")
+        self.assertEqual(stt_service._normalize_mime_type("audio/webm"), "audio/webm")
+        self.assertEqual(stt_service._normalize_mime_type("audio/ogg;codecs=opus"), "audio/ogg")
+        self.assertEqual(stt_service._normalize_mime_type("audio/mp4"), "audio/mp4")
+        self.assertEqual(stt_service._normalize_mime_type("audio/wav"), "audio/wav")
+        self.assertEqual(stt_service._normalize_mime_type(""), "audio/webm")
 
-    def test_extract_transcript(self):
-        sample_response = {
-            "results": [
-                {
-                    "alternatives": [
-                        {"transcript": "Hello everyone, welcome to the meeting.", "confidence": 0.98}
-                    ]
-                },
-                {
-                    "alternatives": [
-                        {"transcript": "Let's review the Q3 roadmap.", "confidence": 0.95}
-                    ]
-                }
-            ]
-        }
-        extracted = stt_service._extract_transcript(sample_response)
-        self.assertEqual(extracted, "Hello everyone, welcome to the meeting. Let's review the Q3 roadmap.")
+    def test_transcribe_empty_or_tiny_audio(self):
+        res1 = stt_service.transcribe_audio_chunk(b"")
+        self.assertEqual(res1, "")
+        res2 = stt_service.transcribe_audio_chunk(b"tiny")
+        self.assertEqual(res2, "")
 
-    def test_extract_transcript_empty(self):
-        self.assertEqual(stt_service._extract_transcript({}), "")
-        self.assertEqual(stt_service._extract_transcript({"results": []}), "")
-
-    @patch("app.services.stt_service.httpx.post")
-    def test_transcribe_audio_chunk_success(self, mock_post):
+    @patch("app.services.stt_service.genai.Client")
+    def test_transcribe_audio_chunk_success(self, mock_client_cls):
+        mock_client = MagicMock()
         mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "results": [
-                {
-                    "alternatives": [
-                        {"transcript": "Test speech transcription."}
-                    ]
-                }
-            ]
-        }
-        mock_post.return_value = mock_resp
+        mock_resp.text = "Hello everyone, welcome to the Google Meet."
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
 
-        with patch("app.config.settings.GOOGLE_SPEECH_API_KEY", "test-key"):
-            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 10, "audio/webm")
-            self.assertEqual(res, "Test speech transcription.")
+        with patch("app.config.settings.GEMINI_API_KEY", "test-gemini-key"):
+            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 20, "audio/webm;codecs=opus")
+            self.assertEqual(res, "Hello everyone, welcome to the Google Meet.")
+            mock_client.models.generate_content.assert_called_once()
 
-    @patch("app.services.stt_service.httpx.post")
-    @patch("app.services.stt_service._call_gemini_audio_stt")
-    def test_transcribe_audio_chunk_fallback_on_401(self, mock_gemini, mock_post):
+    @patch("app.services.stt_service.genai.Client")
+    def test_transcribe_audio_chunk_silence_or_noise(self, mock_client_cls):
+        mock_client = MagicMock()
         mock_resp = MagicMock()
-        mock_resp.status_code = 401
-        mock_resp.text = "Unauthorized"
-        mock_post.return_value = mock_resp
-        mock_gemini.return_value = "Gemini fallback transcript."
+        mock_resp.text = "NO_SPEECH"
+        mock_client.models.generate_content.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
 
-        with patch("app.config.settings.GOOGLE_SPEECH_API_KEY", "invalid-key"):
-            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 10, "audio/webm")
-            self.assertEqual(res, "Gemini fallback transcript.")
-            mock_gemini.assert_called_once()
+        with patch("app.config.settings.GEMINI_API_KEY", "test-gemini-key"):
+            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 20, "audio/webm")
+            self.assertEqual(res, "")
+
+    @patch("app.services.stt_service.genai.Client")
+    def test_transcribe_audio_chunk_api_error_handled(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("Gemini 429 quota exceeded")
+        mock_client_cls.return_value = mock_client
+
+        with patch("app.config.settings.GEMINI_API_KEY", "test-gemini-key"):
+            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 20, "audio/webm")
+            self.assertEqual(res, "")
 
     def test_live_session_deduplication(self):
         runtime = live_session_service.LiveSessionRuntime(

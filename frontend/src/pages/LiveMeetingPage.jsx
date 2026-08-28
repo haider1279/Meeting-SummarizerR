@@ -79,7 +79,6 @@ export const LiveMeetingPage = () => {
   const [transcriptSearch, setTranscriptSearch] = useState('');
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [showStopModal, setShowStopModal] = useState(false);
-  const [sttConfigured, setSttConfigured] = useState(true);
   const [captureError, setCaptureError] = useState(null);
 
   // ── References ────────────────────────────────────────────────────────────
@@ -271,7 +270,6 @@ export const LiveMeetingPage = () => {
       if (data.status) setConnectionStatus(data.status === 'waiting' ? 'capturing' : data.status);
       if (data.insights) setInsights(data.insights);
       if (data.chunks) setTranscriptChunks(data.chunks);
-      if (data.stt_configured !== undefined) setSttConfigured(data.stt_configured);
       if (data.final_meeting_id) {
         navigate(`/meetings/${data.final_meeting_id}`);
       }
@@ -881,11 +879,9 @@ export const LiveMeetingPage = () => {
                 <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 space-y-2">
                   <Radio className="w-6 h-6 animate-pulse text-indigo-400" />
                   <p className="text-xs">Listening for speech in Google Meet audio...</p>
-                  {!sttConfigured && (
-                    <p className="text-[11px] text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
-                      STT API key not set on server — transcription inactive
-                    </p>
-                  )}
+                  <p className="text-[11px] text-slate-400">
+                    Spoken words will appear here in real time as participants speak.
+                  </p>
                 </div>
               ) : (
                 filteredChunks.map((chunk, idx) => (

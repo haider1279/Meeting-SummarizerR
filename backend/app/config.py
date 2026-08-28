@@ -55,13 +55,6 @@ class Settings:
             or "30"
         )
 
-        # Google Meet / Google Cloud Speech-to-Text (optional — free 60 min/month)
-        # Falls back to GEMINI_API_KEY if not explicitly set (same Google Cloud project)
-        self.GOOGLE_SPEECH_API_KEY = os.getenv(
-            "GOOGLE_SPEECH_API_KEY",
-            os.getenv("GEMINI_API_KEY", "")
-        )
-
         # State signing secret (falls back to Supabase service role key or Zoom secret if not set)
         self.STATE_SECRET_KEY = os.getenv(
             "STATE_SECRET_KEY",
@@ -74,23 +67,9 @@ class Settings:
         return bool(self.ZOOM_CLIENT_ID and self.ZOOM_CLIENT_SECRET)
 
     @property
-    def is_google_stt_configured(self) -> bool:
-        """
-        Check if a dedicated Google Cloud Speech-to-Text API key is available.
-
-        IMPORTANT: The GEMINI_API_KEY from Google AI Studio (aistudio.google.com) 
-        is scoped only to generativelanguage.googleapis.com. It CANNOT be used for
-        Cloud Speech-to-Text (speech.googleapis.com). If GOOGLE_SPEECH_API_KEY is
-        not explicitly set, STT calls will silently return HTTP 403 or empty results.
-
-        To fix this:
-        1. Go to https://console.cloud.google.com/apis/library/speech.googleapis.com
-        2. Enable the Cloud Speech-to-Text API
-        3. Create an API key at https://console.cloud.google.com/apis/credentials
-        4. Add it to Render as GOOGLE_SPEECH_API_KEY
-        """
-        explicit_key = os.getenv("GOOGLE_SPEECH_API_KEY", "")
-        return bool(explicit_key)
+    def is_gemini_configured(self) -> bool:
+        """Check if Gemini API key is configured."""
+        return bool(self.GEMINI_API_KEY)
 
 
     @staticmethod

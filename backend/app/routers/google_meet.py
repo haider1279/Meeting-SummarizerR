@@ -13,7 +13,7 @@ This router implements the $0 browser-tab audio capture pipeline:
        ▼
   FastAPI (/api/google-meet/ws/{session_id})
        │
-       ├── stt_service.transcribe_audio_chunk() → Google STT v1 REST → transcript text
+       ├── stt_service.transcribe_audio_chunk() → Gemini API → transcript text
        ├── ingest_transcript_packet() → Supabase + incremental Gemini update
        └── broadcast() → frontend WebSocket (transcript, insights, status)
 
@@ -28,8 +28,8 @@ Endpoints:
 SECURITY NOTES:
   - JWT token is passed as ?token= query param for WebSocket authentication
   - The token is NEVER logged — only the session_id and user_id are logged
-  - GOOGLE_SPEECH_API_KEY is never included in any log output
-  - Base64 audio payload is not logged (too large and contains raw user audio)
+  - GEMINI_API_KEY is never included in any log output or sent to the client
+  - Base64 audio payload is not logged (contains user audio)
 """
 
 import asyncio
@@ -288,7 +288,7 @@ async def google_meet_websocket(
                 "insights": runtime.current_insights,
                 "chunks": runtime.full_transcript_chunks,
                 "final_meeting_id": sess_db.get("final_meeting_id"),
-                "stt_configured": settings.is_google_stt_configured,
+                "ai_configured": bool(settings.GEMINI_API_KEY),
             },
         }))
     except Exception as e:
