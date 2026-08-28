@@ -101,13 +101,24 @@ async def create_google_meet_session(
 
     title = body.get("title") or "Google Meet — Live Session"
 
-    # Only one active session per user at a time
+    # Only reuse a session that is genuinely waiting or live (i.e. still accepting audio).
+    # A 'processing' session is mid-finalization and must NOT be reused — the user would
+    # see "Finalizing…" immediately on the next capture attempt.
     existing = supabase_service.get_active_google_meet_session(user_id)
-    if existing and existing.get("status") in ("waiting", "live", "processing"):
+    if existing and existing.get("status") in ("waiting", "live"):
         logger.info(
             f"[GOOGLE_MEET] Returning existing active session {existing['id']} for user {user_id}"
         )
         return existing
+    if existing and existing.get("status") == "processing":
+        # Mark it failed/completed so it stops blocking new sessions
+        logger.info(
+            f"[GOOGLE_MEET] Stale 'processing' session {existing['id']} found — resetting to failed"
+        )
+        supabase_service.update_live_session(
+            existing["id"],
+            {"status": "failed", "error_message": "Session abandoned during processing."},
+        )
 
     session = None
     try:
@@ -298,7 +309,12 @@ async def google_meet_websocket(
     runtime.add_subscriber(websocket)
     logger.info(f"[GOOGLE_MEET WS] Frontend connected to session {session_id} (User: {user_id})")
 
-    # 4. Send initial synchronization state
+    # 4. Send initial synchronization state.
+    # IMPORTANT: only include final_meeting_id when the session is truly completed —
+    # sending it for a non-completed session causes the frontend to navigate away immediately.
+    is_truly_completed = (
+        sess_db.get("status") == "completed" and bool(sess_db.get("final_meeting_id"))
+    )
     try:
         await websocket.send_text(json.dumps({
             "type": "init",
@@ -308,7 +324,7 @@ async def google_meet_websocket(
                 "title": runtime.title,
                 "insights": runtime.current_insights,
                 "chunks": runtime.full_transcript_chunks,
-                "final_meeting_id": sess_db.get("final_meeting_id"),
+                "final_meeting_id": sess_db.get("final_meeting_id") if is_truly_completed else None,
                 "ai_configured": bool(settings.GEMINI_API_KEY),
             },
         }))
@@ -374,13 +390,6 @@ async def google_meet_websocket(
                     f"[GOOGLE_MEET] Received binary/b64 audio chunk #{seq_num}, "
                     f"size: {len(audio_bytes)} bytes (MIME: {mime_type}, session: {session_id})"
                 )
-
-                # Transition session status to 'live' on first audio
-                if runtime.status == "waiting":
-                    runtime.status = "live"
-                    supabase_service.update_live_session(session_id, {"status": "live"})
-                    await runtime.broadcast("status", {"status": "live"})
-                    logger.info(f"[GOOGLE_MEET] Session {session_id} is now LIVE")
 
                 async def _process_audio_chunk(ab: bytes, mt: str, seq: int):
                     """Run STT and ingest the resulting transcript chunk."""

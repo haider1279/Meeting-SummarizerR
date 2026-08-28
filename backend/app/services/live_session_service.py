@@ -133,8 +133,14 @@ class LiveSessionManager:
                 sess_db = supabase_service.get_live_session(session_id)
                 if sess_db and sess_db.get("current_insights"):
                     runtime.current_insights = sess_db["current_insights"]
-                    if sess_db.get("status"):
-                        runtime.status = sess_db["status"]
+                    # Only restore benign active statuses.
+                    # Do NOT restore 'processing', 'completed', or 'failed' into a fresh
+                    # runtime — they would cause the frontend to see "Finalizing…" immediately
+                    # on the WebSocket init event.
+                    db_status = sess_db.get("status")
+                    if db_status in ("waiting", "live"):
+                        runtime.status = db_status
+                    # Any other DB status (processing / completed / failed) → keep 'waiting'
             except Exception as e:
                 logger.warning(f"[LIVE_SESSION] Failed to seed existing session state: {e}")
 

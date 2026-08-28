@@ -98,6 +98,11 @@ export const LiveMeetingPage = () => {
   const isIntentionalStopRef = useRef(false);
   const isCapturingRef = useRef(false);
   const chunkCountRef = useRef(0);
+  // Explicit lifecycle phase — used to prevent stale-closure finalization bugs.
+  // Possible values: 'idle' | 'requesting' | 'acquired' | 'connecting' | 'capturing' | 'stopping'
+  const capturePhaseRef = useRef('idle');
+  // Mirror of `session` state so async callbacks can always read the current value.
+  const sessionRef = useRef(null);
 
   // ============================================================
   // Lifecycle: mount / unmount cleanup
@@ -106,6 +111,7 @@ export const LiveMeetingPage = () => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      capturePhaseRef.current = 'stopping';
       cleanupWebSocket();
       stopBrowserCapture(true);
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
@@ -115,6 +121,13 @@ export const LiveMeetingPage = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ============================================================
+  // Keep sessionRef in sync so async callbacks have current session
+  // ============================================================
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   // ============================================================
   // Auto-scroll transcript feed
@@ -241,12 +254,22 @@ export const LiveMeetingPage = () => {
       };
 
       ws.onclose = (event) => {
-        console.log('[GOOGLE MEET WS] Connection closed:', event.code, event.reason);
+        console.log('[GOOGLE MEET WS] Connection closed:', event.code, event.reason,
+          '| phase:', capturePhaseRef.current,
+          '| intentionalStop:', isIntentionalStopRef.current);
         if (heartbeatTimerRef.current) {
           clearInterval(heartbeatTimerRef.current);
           heartbeatTimerRef.current = null;
         }
-        if (isMountedRef.current && !isIntentionalStopRef.current && !isFinalizing && connectionStatus !== 'completed') {
+        // Use refs (not stale state closures) to decide whether to reconnect.
+        // Never reconnect if we are intentionally stopping, or already past capturing.
+        const phase = capturePhaseRef.current;
+        const shouldReconnect = (
+          isMountedRef.current &&
+          !isIntentionalStopRef.current &&
+          phase === 'capturing'
+        );
+        if (shouldReconnect) {
           handleWebSocketReconnect(sessionId);
         }
       };
@@ -268,10 +291,17 @@ export const LiveMeetingPage = () => {
     console.log(`[GOOGLE MEET WS] WebSocket message received: type = ${type}`, data);
 
     if (type === 'init') {
-      if (data.status) setConnectionStatus(data.status === 'waiting' ? 'capturing' : data.status);
+      if (data.status) {
+        const mappedStatus = data.status === 'waiting' ? 'capturing' : data.status;
+        setConnectionStatus(mappedStatus);
+        console.log(`[GOOGLE MEET LIFECYCLE] init received: DB status='${data.status}' → UI status='${mappedStatus}'`);
+      }
       if (data.insights) setInsights(data.insights);
       if (data.chunks) setTranscriptChunks(data.chunks);
-      if (data.final_meeting_id) {
+      // Only navigate away if the session is genuinely completed.
+      // A non-null final_meeting_id on an active session would cause immediate navigation.
+      if (data.final_meeting_id && data.status === 'completed') {
+        console.log('[GOOGLE MEET LIFECYCLE] Session already completed — navigating to meeting:', data.final_meeting_id);
         navigate(`/meetings/${data.final_meeting_id}`);
       }
     } else if (type === 'status') {
@@ -455,6 +485,9 @@ export const LiveMeetingPage = () => {
   const startGoogleMeetCapture = async () => {
     setCaptureError(null);
     isIntentionalStopRef.current = false;
+    isCapturingRef.current = false;
+    capturePhaseRef.current = 'requesting';
+    console.log('[GOOGLE MEET LIFECYCLE] state: requesting_capture');
 
     // 1. Browser capability verification
     if (!isTabCaptureSupported()) {
@@ -506,6 +539,8 @@ export const LiveMeetingPage = () => {
     }
 
     displayStreamRef.current = displayStream;
+    capturePhaseRef.current = 'acquired';
+    console.log('[GOOGLE MEET LIFECYCLE] state: capture_acquired');
 
     // 3. Ensure audio track is present
     const audioTracks = displayStream.getAudioTracks();
@@ -532,43 +567,78 @@ export const LiveMeetingPage = () => {
     const audioStream = new MediaStream(audioTracks);
     mediaStreamRef.current = audioStream;
 
-    console.log(
-      `[GOOGLE MEET CAPTURE] Audio track active: readyState=${audioTracks[0]?.readyState} ` +
-      `| enabled=${audioTracks[0]?.enabled} | muted=${audioTracks[0]?.muted}`
-    );
+    // Log detailed track diagnostics to help diagnose track-ended issues
+    const videoTrack = videoTracks[0];
+    const audioTrack = audioTracks[0];
+    console.log('[GOOGLE MEET CAPTURE] === TRACK DIAGNOSTICS ===');
+    console.log('[GOOGLE MEET CAPTURE] Audio track:', {
+      id: audioTrack?.id,
+      readyState: audioTrack?.readyState,
+      enabled: audioTrack?.enabled,
+      muted: audioTrack?.muted,
+      kind: audioTrack?.kind,
+    });
+    if (videoTrack) {
+      console.log('[GOOGLE MEET CAPTURE] Video track:', {
+        id: videoTrack?.id,
+        readyState: videoTrack?.readyState,
+        enabled: videoTrack?.enabled,
+        muted: videoTrack?.muted,
+        kind: videoTrack?.kind,
+      });
+    }
     try {
-      console.log('[GOOGLE MEET CAPTURE] Audio track settings:', JSON.stringify(audioTracks[0]?.getSettings() || {}));
+      console.log('[GOOGLE MEET CAPTURE] Audio track settings:', JSON.stringify(audioTrack?.getSettings() || {}));
     } catch (e) {}
 
     // 4. Create a Google Meet session in database
     let sessionId;
     try {
+      capturePhaseRef.current = 'creating_session';
+      console.log('[GOOGLE MEET LIFECYCLE] state: creating_session');
       setConnectionStatus('connecting');
       setStatusMessage('Initializing Google Meet live session...');
       const res = await api.createGoogleMeetSession({ title: 'Google Meet — Live Session' });
       const sess = res.data;
       sessionId = sess.id;
       setSession(sess);
+      sessionRef.current = sess;  // sync ref immediately (state update is async)
       console.log(`[GOOGLE MEET CAPTURE] Live session created: ${sessionId}`);
     } catch (err) {
       console.error('[GOOGLE MEET CAPTURE] Failed to create session:', err);
       displayStream.getTracks().forEach((t) => t.stop());
       displayStreamRef.current = null;
       mediaStreamRef.current = null;
+      capturePhaseRef.current = 'idle';
       setConnectionStatus('error');
       setStatusMessage(err.userMessage || 'Failed to create live session.');
       return;
     }
 
     // 5. Open authenticated WebSocket
+    capturePhaseRef.current = 'connecting_ws';
+    console.log('[GOOGLE MEET LIFECYCLE] state: connecting_websocket');
     await connectWebSocket(sessionId);
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // 6. Handle user clicking Chrome's "Stop sharing" blue bar
-    const primaryTrack = videoTracks[0] || audioTracks[0];
+    // 6. Handle user clicking Chrome's "Stop sharing" blue bar.
+    // IMPORTANT: Only fire finalization if capturePhaseRef is 'capturing'.
+    // This prevents stale-closure / initialization-race finalization bugs.
+    const primaryTrack = videoTrack || audioTrack;
     primaryTrack.onended = () => {
-      console.log('[GOOGLE MEET CAPTURE] Track ended by user via Chrome stop sharing.');
-      if (isMountedRef.current && !isIntentionalStopRef.current && isCapturingRef.current) {
+      const phase = capturePhaseRef.current;
+      console.log(
+        `[GOOGLE MEET CAPTURE] PRIMARY TRACK ENDED | track.id=${primaryTrack.id} ` +
+        `| phase=${phase} | isIntentionalStop=${isIntentionalStopRef.current} ` +
+        `| isCapturing=${isCapturingRef.current} | timestamp=${Date.now()}`
+      );
+      if (phase !== 'capturing') {
+        console.warn(
+          '[GOOGLE MEET CAPTURE] Track ended but phase is not "capturing" — ignoring to prevent false finalization.'
+        );
+        return;
+      }
+      if (isMountedRef.current && !isIntentionalStopRef.current) {
         showInfo('Tab sharing stopped. Finalizing meeting...');
         handleStopGoogleMeetCapture();
       }
@@ -577,6 +647,8 @@ export const LiveMeetingPage = () => {
     // 7. Start continuous segment capture
     chunkCountRef.current = 0;
     isCapturingRef.current = true;
+    capturePhaseRef.current = 'capturing';
+    console.log('[GOOGLE MEET LIFECYCLE] state: capturing');
     recordSegment();
 
     setConnectionStatus('capturing');
@@ -586,6 +658,7 @@ export const LiveMeetingPage = () => {
   const stopBrowserCapture = useCallback((silent = false) => {
     isIntentionalStopRef.current = true;
     isCapturingRef.current = false;
+    capturePhaseRef.current = 'stopping';
 
     if (chunkTimerRef.current) {
       clearTimeout(chunkTimerRef.current);
@@ -617,13 +690,22 @@ export const LiveMeetingPage = () => {
   }, []);
 
   const handleStopGoogleMeetCapture = async () => {
-    if (!session?.id) return;
+    const currentSession = sessionRef.current;
+    if (!currentSession?.id) {
+      console.warn('[GOOGLE MEET LIFECYCLE] handleStopGoogleMeetCapture called but no active session in ref — aborting.');
+      return;
+    }
+    if (capturePhaseRef.current === 'stopping') {
+      console.warn('[GOOGLE MEET LIFECYCLE] handleStopGoogleMeetCapture called while already stopping — ignoring.');
+      return;
+    }
+    capturePhaseRef.current = 'stopping';
     setIsFinalizing(true);
     setShowStopModal(false);
     setConnectionStatus('processing');
     setStatusMessage('Finalizing summary and saving meeting to history...');
 
-    console.log(`[GOOGLE MEET CAPTURE] Finalization started for session ${session.id}`);
+    console.log(`[GOOGLE MEET LIFECYCLE] FINALIZATION REQUESTED | session=${currentSession.id} | phase=stopping`);
 
     // 1. Stop audio capture tracks
     stopBrowserCapture();
@@ -642,7 +724,7 @@ export const LiveMeetingPage = () => {
     // 4. REST stop call with timeout & safety
     try {
       console.log('[GOOGLE MEET CAPTURE] Calling stopGoogleMeetSession API...');
-      const stopRes = await api.stopGoogleMeetSession(session.id);
+      const stopRes = await api.stopGoogleMeetSession(currentSession.id);
       console.log('[GOOGLE MEET CAPTURE] stopGoogleMeetSession API response:', stopRes.data);
 
       if (stopRes.data?.final_meeting_id) {
@@ -668,7 +750,7 @@ export const LiveMeetingPage = () => {
       }
 
       try {
-        const sessRes = await api.getGoogleMeetSession(session.id);
+        const sessRes = await api.getGoogleMeetSession(currentSession.id);
         const s = sessRes.data;
         if (s?.status === 'completed' && s?.final_meeting_id) {
           clearInterval(pollInterval);
