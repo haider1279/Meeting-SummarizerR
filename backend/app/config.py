@@ -75,8 +75,22 @@ class Settings:
 
     @property
     def is_google_stt_configured(self) -> bool:
-        """Check if Google Cloud Speech-to-Text API key is available."""
-        return bool(self.GOOGLE_SPEECH_API_KEY)
+        """
+        Check if a dedicated Google Cloud Speech-to-Text API key is available.
+
+        IMPORTANT: The GEMINI_API_KEY from Google AI Studio (aistudio.google.com) 
+        is scoped only to generativelanguage.googleapis.com. It CANNOT be used for
+        Cloud Speech-to-Text (speech.googleapis.com). If GOOGLE_SPEECH_API_KEY is
+        not explicitly set, STT calls will silently return HTTP 403 or empty results.
+
+        To fix this:
+        1. Go to https://console.cloud.google.com/apis/library/speech.googleapis.com
+        2. Enable the Cloud Speech-to-Text API
+        3. Create an API key at https://console.cloud.google.com/apis/credentials
+        4. Add it to Render as GOOGLE_SPEECH_API_KEY
+        """
+        explicit_key = os.getenv("GOOGLE_SPEECH_API_KEY", "")
+        return bool(explicit_key)
 
 
     @staticmethod

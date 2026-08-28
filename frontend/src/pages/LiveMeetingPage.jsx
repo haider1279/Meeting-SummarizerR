@@ -94,7 +94,10 @@ export const LiveMeetingPage = () => {
   // Media capture refs
   const mediaStreamRef = useRef(null);
   const mediaRecorderRef = useRef(null);
+  const chunkTimerRef = useRef(null);
   const isIntentionalStopRef = useRef(false);
+  const isCapturingRef = useRef(false);
+  const chunkCountRef = useRef(0);
 
   // ============================================================
   // Lifecycle: mount / unmount cleanup
@@ -108,6 +111,7 @@ export const LiveMeetingPage = () => {
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+      if (chunkTimerRef.current) clearTimeout(chunkTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -197,6 +201,7 @@ export const LiveMeetingPage = () => {
         return;
       }
 
+      console.log('[Google Meet WS] WebSocket connecting...');
       const wsUrl = getGoogleMeetWebSocketUrl(sessionId, token);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -206,7 +211,7 @@ export const LiveMeetingPage = () => {
           try { ws.close(); } catch (e) {}
           return;
         }
-        console.log('[Google Meet WS] Connected to live session stream:', sessionId);
+        console.log('[Google Meet WS] WebSocket connected to session:', sessionId);
         reconnectAttemptsRef.current = 0;
         setConnectionStatus('capturing');
         setStatusMessage('Connected. Streaming Google Meet tab audio to backend...');
@@ -260,6 +265,7 @@ export const LiveMeetingPage = () => {
 
   const handleWebSocketMessage = (payload) => {
     const { type, data } = payload;
+    console.log(`[Google Meet WS] WebSocket message received: type = ${type}`, data);
 
     if (type === 'init') {
       if (data.status) setConnectionStatus(data.status === 'waiting' ? 'capturing' : data.status);
@@ -281,6 +287,7 @@ export const LiveMeetingPage = () => {
       }
     } else if (type === 'transcript') {
       if (data.chunk) {
+        console.log(`[Google Meet WS] Transcript chunk received: "${data.chunk.text}"`);
         setTranscriptChunks((prev) => {
           const exists = prev.some((c) => c.chunk_hash && c.chunk_hash === data.chunk.chunk_hash);
           if (exists) return prev;
@@ -291,7 +298,10 @@ export const LiveMeetingPage = () => {
         }
       }
     } else if (type === 'insights') {
-      if (data.insights) setInsights(data.insights);
+      if (data.insights) {
+        console.log('[Google Meet WS] Updated incremental AI insights received');
+        setInsights(data.insights);
+      }
     } else if (type === 'meeting_ended') {
       setConnectionStatus('completed');
       setIsFinalizing(false);
@@ -345,23 +355,99 @@ export const LiveMeetingPage = () => {
   // Google Meet Browser Tab Audio Capture
   // ============================================================
 
-  const sendAudioChunkOverWebSocket = useCallback((blob) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+  const sendAudioChunkOverWebSocket = useCallback((blob, mimeTypeOverride) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.warn('[GM Capture] WebSocket not open — dropping chunk');
+      return;
+    }
+
+    chunkCountRef.current += 1;
+    const chunkNum = chunkCountRef.current;
+    const effectiveMime = mimeTypeOverride || blob.type || 'audio/webm';
+
+    console.log(`[GM Capture] Sending audio chunk #${chunkNum}, size ${blob.size} bytes (MIME: ${effectiveMime})`);
+
     const reader = new FileReader();
     reader.onloadend = () => {
       try {
         const base64 = reader.result.split(',')[1];
-        wsRef.current.send(JSON.stringify({
-          action: 'audio_chunk',
-          data: base64,
-          mime_type: blob.type || 'audio/webm',
-        }));
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            action: 'audio_chunk',
+            data: base64,
+            mime_type: effectiveMime,
+          }));
+        }
       } catch (e) {
         console.warn('[GM Capture] Failed to send audio chunk:', e);
       }
     };
     reader.readAsDataURL(blob);
   }, []);
+
+  // Continuous segment recorder loop: Each segment produces a standalone, self-contained WebM file
+  const recordSegment = useCallback(() => {
+    if (!isCapturingRef.current || !mediaStreamRef.current) return;
+
+    const stream = mediaStreamRef.current;
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0 || audioTracks[0].readyState !== 'live') {
+      console.warn('[GM Capture] Audio track ended or not live. Ending segment loop.');
+      return;
+    }
+
+    const mimeType = getSupportedAudioMimeType();
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    } catch (e) {
+      console.warn('[GM Capture] MediaRecorder init with mimeType failed, falling back to default:', e);
+      recorder = new MediaRecorder(stream);
+    }
+    mediaRecorderRef.current = recorder;
+
+    console.log(
+      `[GM Capture] MediaRecorder segment #${chunkCountRef.current + 1} initialized. ` +
+      `MIME: ${recorder.mimeType || mimeType || '(default)'} | Audio tracks: ${audioTracks.length} | ` +
+      `readyState: ${audioTracks[0]?.readyState} | enabled: ${audioTracks[0]?.enabled} | muted: ${audioTracks[0]?.muted}`
+    );
+
+    recorder.ondataavailable = (event) => {
+      console.log(`[GM Capture] dataavailable chunk #${chunkCountRef.current + 1} size: ${event.data?.size ?? 0} bytes | type: ${event.data?.type}`);
+      if (event.data && event.data.size > 0) {
+        sendAudioChunkOverWebSocket(event.data, recorder.mimeType || mimeType || 'audio/webm');
+      } else {
+        console.warn('[GM Capture] Received zero-byte audio chunk — skipping.');
+      }
+    };
+
+    recorder.onstop = () => {
+      if (isCapturingRef.current && isMountedRef.current && !isIntentionalStopRef.current) {
+        recordSegment();
+      }
+    };
+
+    recorder.onerror = (e) => {
+      console.error('[GM Capture] MediaRecorder error:', e);
+      setCaptureError('Recording stream error encountered. Please try restarting capture.');
+    };
+
+    try {
+      recorder.start();
+    } catch (err) {
+      console.error('[GM Capture] Could not start MediaRecorder:', err);
+      return;
+    }
+
+    // Flush every 5 seconds to yield a complete, self-contained WebM file
+    chunkTimerRef.current = setTimeout(() => {
+      if (recorder && recorder.state === 'recording') {
+        try {
+          recorder.stop();
+        } catch (e) {}
+      }
+    }, 5000);
+  }, [sendAudioChunkOverWebSocket]);
 
   const startGoogleMeetCapture = async () => {
     setCaptureError(null);
@@ -436,6 +522,15 @@ export const LiveMeetingPage = () => {
     const audioStream = new MediaStream(audioTracks);
     mediaStreamRef.current = audioStream;
 
+    console.log('[GM Capture] Google Meet capture started');
+    console.log(`[GM Capture] audio tracks: ${audioTracks.length}`);
+    console.log(`[GM Capture] audio track readyState: ${audioTracks[0]?.readyState}`);
+    console.log(`[GM Capture] audio track enabled: ${audioTracks[0]?.enabled}`);
+    console.log(`[GM Capture] audio track muted: ${audioTracks[0]?.muted}`);
+    try {
+      console.log('[GM Capture] audio track settings:', JSON.stringify(audioTracks[0]?.getSettings() || {}));
+    } catch (e) {}
+
     // 6. Create a Google Meet session in database
     let sessionId;
     try {
@@ -456,28 +551,7 @@ export const LiveMeetingPage = () => {
     await connectWebSocket(sessionId);
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // 8. Start MediaRecorder with dynamically supported audio format
-    const mimeType = getSupportedAudioMimeType();
-    let recorder;
-    try {
-      recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : {});
-    } catch (e) {
-      recorder = new MediaRecorder(audioStream);
-    }
-    mediaRecorderRef.current = recorder;
-
-    recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
-        sendAudioChunkOverWebSocket(event.data);
-      }
-    };
-
-    recorder.onerror = (e) => {
-      console.error('[GM Capture] MediaRecorder error:', e);
-      setCaptureError('Recording stream error encountered. Please try restarting capture.');
-    };
-
-    // 9. Handle user clicking Chrome's "Stop sharing" bar
+    // 8. Handle user clicking Chrome's "Stop sharing" bar
     audioTracks[0].onended = () => {
       console.log('[GM Capture] Audio track ended by user.');
       if (isMountedRef.current && !isIntentionalStopRef.current) {
@@ -486,14 +560,23 @@ export const LiveMeetingPage = () => {
       }
     };
 
-    // 10. Stream 5-second audio chunks continuously
-    recorder.start(5000);
+    // 9. Start continuous segment capture
+    chunkCountRef.current = 0;
+    isCapturingRef.current = true;
+    recordSegment();
+
     setConnectionStatus('capturing');
     setStatusMessage('Capturing Google Meet audio in real time. Speak in the Meet call!');
   };
 
   const stopBrowserCapture = useCallback((silent = false) => {
     isIntentionalStopRef.current = true;
+    isCapturingRef.current = false;
+
+    if (chunkTimerRef.current) {
+      clearTimeout(chunkTimerRef.current);
+      chunkTimerRef.current = null;
+    }
 
     if (mediaRecorderRef.current) {
       try {

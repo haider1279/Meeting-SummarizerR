@@ -329,9 +329,9 @@ async def google_meet_websocket(
                     logger.warning(f"[GOOGLE_MEET WS] Failed to decode audio base64: {e}")
                     continue
 
-                if len(audio_bytes) < 512:
-                    # Skip trivially small chunks (e.g. headers with no audio content)
-                    logger.debug(f"[GOOGLE_MEET WS] Skipping small audio chunk: {len(audio_bytes)} bytes")
+                if len(audio_bytes) < 100:
+                    # Skip truly tiny chunks (bare codec headers with no audio frames)
+                    logger.debug(f"[GOOGLE_MEET WS] Skipping very small audio chunk: {len(audio_bytes)} bytes")
                     continue
 
                 logger.info(
@@ -346,41 +346,55 @@ async def google_meet_websocket(
                     await runtime.broadcast("status", {"status": "live"})
                     logger.info(f"[GOOGLE_MEET] Session {session_id} is now LIVE")
 
-                # Run STT in a thread executor (blocking HTTP call)
                 chunk_sequence[0] += 1
                 seq_num = chunk_sequence[0]
 
+                logger.info(
+                    f"[GOOGLE_MEET] Received binary/b64 audio chunk #{seq_num}, "
+                    f"size: {len(audio_bytes)} bytes (MIME: {mime_type}, session: {session_id})"
+                )
+
+                # Transition session status to 'live' on first audio
+                if runtime.status == "waiting":
+                    runtime.status = "live"
+                    supabase_service.update_live_session(session_id, {"status": "live"})
+                    await runtime.broadcast("status", {"status": "live"})
+                    logger.info(f"[GOOGLE_MEET] Session {session_id} is now LIVE")
+
                 async def _process_audio_chunk(ab: bytes, mt: str, seq: int):
                     """Run STT and ingest the resulting transcript chunk."""
-                    logger.info(f"[STT] Processing audio chunk #{seq} ({len(ab)} bytes)")
+                    try:
+                        logger.info(f"[STT] Sending audio chunk #{seq} ({len(ab)} bytes) to STT...")
+                        loop = asyncio.get_running_loop()
+                        transcript_text = await loop.run_in_executor(
+                            None,
+                            stt_service.transcribe_audio_chunk,
+                            ab,
+                            mt,
+                        )
 
-                    loop = asyncio.get_running_loop()
-                    transcript_text = await loop.run_in_executor(
-                        None,
-                        stt_service.transcribe_audio_chunk,
-                        ab,
-                        mt,
-                    )
+                        if not transcript_text or not transcript_text.strip():
+                            logger.info(f"[STT] STT returned no transcript for audio chunk #{seq} (silence or noise).")
+                            return
 
-                    if not transcript_text or not transcript_text.strip():
-                        logger.debug(f"[STT] Chunk #{seq}: no speech detected or silence.")
-                        return
+                        logger.info(
+                            f"[STT] STT response received for chunk #{seq} | Transcript: "
+                            f"{transcript_text[:100]}..."
+                        )
 
-                    logger.info(
-                        f"[STT] Transcript chunk generated (#{seq}): "
-                        f"{transcript_text[:60]}..."
-                    )
-
-                    timestamp_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    await live_session_service.ingest_transcript_packet(
-                        runtime=runtime,
-                        speaker_id=None,
-                        speaker_name="Speaker",
-                        text=transcript_text,
-                        timestamp=timestamp_str,
-                        sequence=seq,
-                        language="en",
-                    )
+                        timestamp_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        logger.info(f"[GOOGLE_MEET] Broadcasting transcript chunk #{seq} to subscribers...")
+                        await live_session_service.ingest_transcript_packet(
+                            runtime=runtime,
+                            speaker_id=None,
+                            speaker_name="Speaker",
+                            text=transcript_text,
+                            timestamp=timestamp_str,
+                            sequence=seq,
+                            language="en",
+                        )
+                    except Exception as err:
+                        logger.error(f"[GOOGLE_MEET] Error processing audio chunk #{seq}: {err}", exc_info=True)
 
                 # Fire-and-forget so the WebSocket loop isn't blocked
                 asyncio.create_task(_process_audio_chunk(audio_bytes, mime_type, seq_num))

@@ -53,8 +53,22 @@ class TestGoogleMeetAndSTT(unittest.TestCase):
         mock_post.return_value = mock_resp
 
         with patch("app.config.settings.GOOGLE_SPEECH_API_KEY", "test-key"):
-            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes", "audio/webm")
+            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 10, "audio/webm")
             self.assertEqual(res, "Test speech transcription.")
+
+    @patch("app.services.stt_service.httpx.post")
+    @patch("app.services.stt_service._call_gemini_audio_stt")
+    def test_transcribe_audio_chunk_fallback_on_401(self, mock_gemini, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.text = "Unauthorized"
+        mock_post.return_value = mock_resp
+        mock_gemini.return_value = "Gemini fallback transcript."
+
+        with patch("app.config.settings.GOOGLE_SPEECH_API_KEY", "invalid-key"):
+            res = stt_service.transcribe_audio_chunk(b"dummy-audio-bytes" * 10, "audio/webm")
+            self.assertEqual(res, "Gemini fallback transcript.")
+            mock_gemini.assert_called_once()
 
     def test_live_session_deduplication(self):
         runtime = live_session_service.LiveSessionRuntime(
