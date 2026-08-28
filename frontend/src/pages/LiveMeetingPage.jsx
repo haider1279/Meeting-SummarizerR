@@ -91,6 +91,7 @@ export const LiveMeetingPage = () => {
   const reconnectAttemptsRef = useRef(0);
 
   // Media capture refs
+  const displayStreamRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const chunkTimerRef = useRef(null);
@@ -200,7 +201,7 @@ export const LiveMeetingPage = () => {
         return;
       }
 
-      console.log('[Google Meet WS] WebSocket connecting...');
+      console.log('[GOOGLE MEET WS] WebSocket connecting...');
       const wsUrl = getGoogleMeetWebSocketUrl(sessionId, token);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -210,7 +211,7 @@ export const LiveMeetingPage = () => {
           try { ws.close(); } catch (e) {}
           return;
         }
-        console.log('[Google Meet WS] WebSocket connected to session:', sessionId);
+        console.log('[GOOGLE MEET WS] WebSocket connected to session:', sessionId);
         reconnectAttemptsRef.current = 0;
         setConnectionStatus('capturing');
         setStatusMessage('Connected. Streaming Google Meet tab audio to backend...');
@@ -222,7 +223,7 @@ export const LiveMeetingPage = () => {
             try {
               wsRef.current.send(JSON.stringify({ action: 'ping' }));
             } catch (e) {
-              console.warn('[Google Meet WS] Ping error:', e);
+              console.warn('[GOOGLE MEET WS] Ping error:', e);
             }
           }
         }, 15000);
@@ -235,12 +236,12 @@ export const LiveMeetingPage = () => {
           if (payload.type === 'pong') return;
           handleWebSocketMessage(payload);
         } catch (e) {
-          console.error('[Google Meet WS] Failed to parse message:', e);
+          console.error('[GOOGLE MEET WS] Failed to parse message:', e);
         }
       };
 
       ws.onclose = (event) => {
-        console.log('[Google Meet WS] Connection closed:', event.code, event.reason);
+        console.log('[GOOGLE MEET WS] Connection closed:', event.code, event.reason);
         if (heartbeatTimerRef.current) {
           clearInterval(heartbeatTimerRef.current);
           heartbeatTimerRef.current = null;
@@ -251,10 +252,10 @@ export const LiveMeetingPage = () => {
       };
 
       ws.onerror = (error) => {
-        console.error('[Google Meet WS] Error encountered:', error);
+        console.error('[GOOGLE MEET WS] Error encountered:', error);
       };
     } catch (err) {
-      console.error('[Google Meet WS] Setup failed:', err);
+      console.error('[GOOGLE MEET WS] Setup failed:', err);
       if (isMountedRef.current) {
         handleWebSocketReconnect(sessionId);
       }
@@ -264,7 +265,7 @@ export const LiveMeetingPage = () => {
 
   const handleWebSocketMessage = (payload) => {
     const { type, data } = payload;
-    console.log(`[Google Meet WS] WebSocket message received: type = ${type}`, data);
+    console.log(`[GOOGLE MEET WS] WebSocket message received: type = ${type}`, data);
 
     if (type === 'init') {
       if (data.status) setConnectionStatus(data.status === 'waiting' ? 'capturing' : data.status);
@@ -285,7 +286,7 @@ export const LiveMeetingPage = () => {
       }
     } else if (type === 'transcript') {
       if (data.chunk) {
-        console.log(`[Google Meet WS] Transcript chunk received: "${data.chunk.text}"`);
+        console.log(`[GOOGLE MEET WS] Transcript chunk received: "${data.chunk.text}"`);
         setTranscriptChunks((prev) => {
           const exists = prev.some((c) => c.chunk_hash && c.chunk_hash === data.chunk.chunk_hash);
           if (exists) return prev;
@@ -297,7 +298,7 @@ export const LiveMeetingPage = () => {
       }
     } else if (type === 'insights') {
       if (data.insights) {
-        console.log('[Google Meet WS] Updated incremental AI insights received');
+        console.log('[GOOGLE MEET WS] Updated incremental AI insights received');
         setInsights(data.insights);
       }
     } else if (type === 'meeting_ended') {
@@ -305,7 +306,7 @@ export const LiveMeetingPage = () => {
       setIsFinalizing(false);
       showSuccess('Google Meet live session ended and summary saved to History!', 'Meeting Complete');
       if (data.final_meeting_id) {
-        setTimeout(() => navigate(`/meetings/${data.final_meeting_id}`), 1200);
+        setTimeout(() => navigate(`/meetings/${data.final_meeting_id}`), 1000);
       }
     } else if (type === 'error') {
       showError(data.message || 'An error occurred during live meeting processing.');
@@ -355,7 +356,7 @@ export const LiveMeetingPage = () => {
 
   const sendAudioChunkOverWebSocket = useCallback((blob, mimeTypeOverride) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      console.warn('[GM Capture] WebSocket not open — dropping chunk');
+      console.warn('[GOOGLE MEET CAPTURE] WebSocket not open — dropping chunk');
       return;
     }
 
@@ -363,7 +364,7 @@ export const LiveMeetingPage = () => {
     const chunkNum = chunkCountRef.current;
     const effectiveMime = mimeTypeOverride || blob.type || 'audio/webm';
 
-    console.log(`[GM Capture] Sending audio chunk #${chunkNum}, size ${blob.size} bytes (MIME: ${effectiveMime})`);
+    console.log(`[GOOGLE MEET CAPTURE] Sending audio chunk #${chunkNum}, size ${blob.size} bytes (MIME: ${effectiveMime})`);
 
     const reader = new FileReader();
     reader.onloadend = () => {
@@ -375,9 +376,10 @@ export const LiveMeetingPage = () => {
             data: base64,
             mime_type: effectiveMime,
           }));
+          console.log(`[GOOGLE MEET WS] Audio chunk #${chunkNum} sent over WebSocket`);
         }
       } catch (e) {
-        console.warn('[GM Capture] Failed to send audio chunk:', e);
+        console.warn('[GOOGLE MEET CAPTURE] Failed to send audio chunk:', e);
       }
     };
     reader.readAsDataURL(blob);
@@ -390,7 +392,7 @@ export const LiveMeetingPage = () => {
     const stream = mediaStreamRef.current;
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0 || audioTracks[0].readyState !== 'live') {
-      console.warn('[GM Capture] Audio track ended or not live. Ending segment loop.');
+      console.warn('[GOOGLE MEET RECORDER] Audio track ended or not live. Ending segment loop.');
       return;
     }
 
@@ -399,41 +401,44 @@ export const LiveMeetingPage = () => {
     try {
       recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
     } catch (e) {
-      console.warn('[GM Capture] MediaRecorder init with mimeType failed, falling back to default:', e);
+      console.warn('[GOOGLE MEET RECORDER] MediaRecorder init with mimeType failed, falling back to default:', e);
       recorder = new MediaRecorder(stream);
     }
     mediaRecorderRef.current = recorder;
 
     console.log(
-      `[GM Capture] MediaRecorder segment #${chunkCountRef.current + 1} initialized. ` +
+      `[GOOGLE MEET RECORDER] MediaRecorder segment #${chunkCountRef.current + 1} initialized. ` +
       `MIME: ${recorder.mimeType || mimeType || '(default)'} | Audio tracks: ${audioTracks.length} | ` +
       `readyState: ${audioTracks[0]?.readyState} | enabled: ${audioTracks[0]?.enabled} | muted: ${audioTracks[0]?.muted}`
     );
 
     recorder.ondataavailable = (event) => {
-      console.log(`[GM Capture] dataavailable chunk #${chunkCountRef.current + 1} size: ${event.data?.size ?? 0} bytes | type: ${event.data?.type}`);
+      console.log(
+        `[GOOGLE MEET RECORDER] ondataavailable chunk #${chunkCountRef.current + 1} size: ${event.data?.size ?? 0} bytes | type: ${event.data?.type}`
+      );
       if (event.data && event.data.size > 0) {
         sendAudioChunkOverWebSocket(event.data, recorder.mimeType || mimeType || 'audio/webm');
       } else {
-        console.warn('[GM Capture] Received zero-byte audio chunk — skipping.');
+        console.warn('[GOOGLE MEET RECORDER] Received zero-byte audio chunk — skipping.');
       }
     };
 
     recorder.onstop = () => {
+      console.log(`[GOOGLE MEET RECORDER] MediaRecorder segment stopped.`);
       if (isCapturingRef.current && isMountedRef.current && !isIntentionalStopRef.current) {
         recordSegment();
       }
     };
 
     recorder.onerror = (e) => {
-      console.error('[GM Capture] MediaRecorder error:', e);
+      console.error('[GOOGLE MEET RECORDER] MediaRecorder error:', e);
       setCaptureError('Recording stream error encountered. Please try restarting capture.');
     };
 
     try {
       recorder.start();
     } catch (err) {
-      console.error('[GM Capture] Could not start MediaRecorder:', err);
+      console.error('[GOOGLE MEET RECORDER] Could not start MediaRecorder:', err);
       return;
     }
 
@@ -460,6 +465,8 @@ export const LiveMeetingPage = () => {
       return;
     }
 
+    console.log('[GOOGLE MEET CAPTURE] Requesting browser display media for tab capture...');
+
     // 2. Request browser tab audio stream (video: true is required by Chromium getDisplayMedia spec)
     let displayStream;
     try {
@@ -477,7 +484,7 @@ export const LiveMeetingPage = () => {
         surfaceSwitching: 'include',
       });
     } catch (err) {
-      console.warn('[GM Capture] getDisplayMedia error:', err);
+      console.warn('[GOOGLE MEET CAPTURE] getDisplayMedia error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setCaptureError(
           'Screen/tab sharing was cancelled or permission was denied. Please click "Start Google Meet Capture" again and select the Google Meet tab.'
@@ -498,10 +505,20 @@ export const LiveMeetingPage = () => {
       return;
     }
 
+    displayStreamRef.current = displayStream;
+
     // 3. Ensure audio track is present
     const audioTracks = displayStream.getAudioTracks();
+    const videoTracks = displayStream.getVideoTracks();
+
+    console.log(
+      `[GOOGLE MEET CAPTURE] displayStream acquired: ${audioTracks.length} audio track(s), ${videoTracks.length} video track(s)`
+    );
+
     if (audioTracks.length === 0) {
+      console.warn('[GOOGLE MEET CAPTURE] No audio track returned by getDisplayMedia.');
       displayStream.getTracks().forEach((t) => t.stop());
+      displayStreamRef.current = null;
       setCaptureError(
         'No tab audio was shared. In the browser sharing popup, you must select the ' +
         'Google Meet tab and tick the "Share tab audio" checkbox.'
@@ -509,27 +526,21 @@ export const LiveMeetingPage = () => {
       return;
     }
 
-    // 4. Immediately stop all video tracks — only audio is processed and streamed
-    displayStream.getVideoTracks().forEach((track) => {
-      try {
-        track.stop();
-      } catch (e) {}
-    });
-
-    // 5. Construct audio-only stream for MediaRecorder
+    // IMPORTANT: DO NOT call track.stop() on videoTracks!
+    // In Chromium, stopping the video track terminates the tab-capture session and ends the audio track.
+    // Instead, construct an audio-only MediaStream containing only the audio tracks for MediaRecorder.
     const audioStream = new MediaStream(audioTracks);
     mediaStreamRef.current = audioStream;
 
-    console.log('[GM Capture] Google Meet capture started');
-    console.log(`[GM Capture] audio tracks: ${audioTracks.length}`);
-    console.log(`[GM Capture] audio track readyState: ${audioTracks[0]?.readyState}`);
-    console.log(`[GM Capture] audio track enabled: ${audioTracks[0]?.enabled}`);
-    console.log(`[GM Capture] audio track muted: ${audioTracks[0]?.muted}`);
+    console.log(
+      `[GOOGLE MEET CAPTURE] Audio track active: readyState=${audioTracks[0]?.readyState} ` +
+      `| enabled=${audioTracks[0]?.enabled} | muted=${audioTracks[0]?.muted}`
+    );
     try {
-      console.log('[GM Capture] audio track settings:', JSON.stringify(audioTracks[0]?.getSettings() || {}));
+      console.log('[GOOGLE MEET CAPTURE] Audio track settings:', JSON.stringify(audioTracks[0]?.getSettings() || {}));
     } catch (e) {}
 
-    // 6. Create a Google Meet session in database
+    // 4. Create a Google Meet session in database
     let sessionId;
     try {
       setConnectionStatus('connecting');
@@ -538,27 +549,32 @@ export const LiveMeetingPage = () => {
       const sess = res.data;
       sessionId = sess.id;
       setSession(sess);
+      console.log(`[GOOGLE MEET CAPTURE] Live session created: ${sessionId}`);
     } catch (err) {
-      audioStream.getTracks().forEach((t) => t.stop());
+      console.error('[GOOGLE MEET CAPTURE] Failed to create session:', err);
+      displayStream.getTracks().forEach((t) => t.stop());
+      displayStreamRef.current = null;
+      mediaStreamRef.current = null;
       setConnectionStatus('error');
       setStatusMessage(err.userMessage || 'Failed to create live session.');
       return;
     }
 
-    // 7. Open authenticated WebSocket
+    // 5. Open authenticated WebSocket
     await connectWebSocket(sessionId);
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // 8. Handle user clicking Chrome's "Stop sharing" bar
-    audioTracks[0].onended = () => {
-      console.log('[GM Capture] Audio track ended by user.');
-      if (isMountedRef.current && !isIntentionalStopRef.current) {
+    // 6. Handle user clicking Chrome's "Stop sharing" blue bar
+    const primaryTrack = videoTracks[0] || audioTracks[0];
+    primaryTrack.onended = () => {
+      console.log('[GOOGLE MEET CAPTURE] Track ended by user via Chrome stop sharing.');
+      if (isMountedRef.current && !isIntentionalStopRef.current && isCapturingRef.current) {
         showInfo('Tab sharing stopped. Finalizing meeting...');
         handleStopGoogleMeetCapture();
       }
     };
 
-    // 9. Start continuous segment capture
+    // 7. Start continuous segment capture
     chunkCountRef.current = 0;
     isCapturingRef.current = true;
     recordSegment();
@@ -591,6 +607,13 @@ export const LiveMeetingPage = () => {
       } catch (e) {}
       mediaStreamRef.current = null;
     }
+
+    if (displayStreamRef.current) {
+      try {
+        displayStreamRef.current.getTracks().forEach((t) => t.stop());
+      } catch (e) {}
+      displayStreamRef.current = null;
+    }
   }, []);
 
   const handleStopGoogleMeetCapture = async () => {
@@ -600,28 +623,75 @@ export const LiveMeetingPage = () => {
     setConnectionStatus('processing');
     setStatusMessage('Finalizing summary and saving meeting to history...');
 
+    console.log(`[GOOGLE MEET CAPTURE] Finalization started for session ${session.id}`);
+
     // 1. Stop audio capture tracks
     stopBrowserCapture();
 
-    // 2. Allow in-flight audio chunks to flush
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // 2. Allow any in-flight audio chunk to finish sending
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    // 3. Send stop action over WebSocket
+    // 3. Send stop action over WebSocket if open
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       try {
         wsRef.current.send(JSON.stringify({ action: 'stop' }));
+        console.log('[GOOGLE MEET WS] Sent stop action over WebSocket');
       } catch (e) {}
     }
 
-    // 4. REST stop fallback
+    // 4. REST stop call with timeout & safety
     try {
-      await api.stopGoogleMeetSession(session.id);
-      showInfo('Consolidating final AI summary with Gemini...');
+      console.log('[GOOGLE MEET CAPTURE] Calling stopGoogleMeetSession API...');
+      const stopRes = await api.stopGoogleMeetSession(session.id);
+      console.log('[GOOGLE MEET CAPTURE] stopGoogleMeetSession API response:', stopRes.data);
+
+      if (stopRes.data?.final_meeting_id) {
+        const finalMeetingId = stopRes.data.final_meeting_id;
+        setConnectionStatus('completed');
+        setIsFinalizing(false);
+        showSuccess('Google Meet live session ended and summary saved to History!', 'Meeting Complete');
+        setTimeout(() => navigate(`/meetings/${finalMeetingId}`), 800);
+        return;
+      }
     } catch (err) {
-      console.error('REST stop fallback error:', err);
-      showError(err.userMessage || 'Failed to stop session.');
-      setIsFinalizing(false);
+      console.warn('[GOOGLE MEET CAPTURE] REST stop error (will check status via polling):', err);
     }
+
+    // 5. Polling fallback for completion (max 25s)
+    let attempts = 0;
+    const maxAttempts = 12; // 12 x 2s = 24s
+    const pollInterval = setInterval(async () => {
+      attempts += 1;
+      if (!isMountedRef.current) {
+        clearInterval(pollInterval);
+        return;
+      }
+
+      try {
+        const sessRes = await api.getGoogleMeetSession(session.id);
+        const s = sessRes.data;
+        if (s?.status === 'completed' && s?.final_meeting_id) {
+          clearInterval(pollInterval);
+          setConnectionStatus('completed');
+          setIsFinalizing(false);
+          showSuccess('Google Meet live session ended and summary saved to History!', 'Meeting Complete');
+          setTimeout(() => navigate(`/meetings/${s.final_meeting_id}`), 800);
+          return;
+        }
+      } catch (e) {
+        console.warn('[GOOGLE MEET CAPTURE] Polling session status failed:', e);
+      }
+
+      if (attempts >= maxAttempts) {
+        clearInterval(pollInterval);
+        if (isMountedRef.current) {
+          setIsFinalizing(false);
+          setConnectionStatus('completed');
+          showInfo('Meeting processing complete. Check Meeting History.');
+          setTimeout(() => navigate('/history'), 1000);
+        }
+      }
+    }, 2000);
   };
 
   // ============================================================

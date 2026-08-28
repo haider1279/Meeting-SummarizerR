@@ -184,18 +184,39 @@ async def stop_google_meet_session(
             detail="Session not found or access denied.",
         )
 
+    if session.get("status") == "completed" and session.get("final_meeting_id"):
+        return {
+            "message": "Session already completed.",
+            "final_meeting_id": session.get("final_meeting_id"),
+        }
+
     runtime = live_session_service.live_session_manager.get_runtime(session_id)
-    if runtime and not runtime.is_finalizing:
-        asyncio.create_task(live_session_service.finalize_live_meeting(runtime))
-        logger.info(f"[GOOGLE_MEET] Finalization triggered for session {session_id}")
-        return {"message": "Meeting finalization started. Summary will appear in History shortly."}
+    if runtime:
+        if not runtime.is_finalizing:
+            logger.info(f"[GOOGLE_MEET] Finalization started for session {session_id}")
+            final_meeting_id = await live_session_service.finalize_live_meeting(runtime)
+            return {
+                "message": "Meeting finalization complete.",
+                "final_meeting_id": final_meeting_id,
+            }
+        else:
+            # Wait briefly for in-progress finalization to complete
+            for _ in range(30):
+                await asyncio.sleep(0.5)
+                sess_updated = supabase_service.get_live_session(session_id, user_id=user_id)
+                if sess_updated and sess_updated.get("final_meeting_id"):
+                    return {
+                        "message": "Meeting finalization complete.",
+                        "final_meeting_id": sess_updated.get("final_meeting_id"),
+                    }
 
-    if session.get("status") == "completed":
-        return {"message": "Session already completed.", "final_meeting_id": session.get("final_meeting_id")}
-
-    # Fallback: update status directly if no in-memory runtime
+    # Fallback: update status and check database
     supabase_service.update_live_session(session_id, {"status": "processing"})
-    return {"message": "Session marked for processing."}
+    sess_updated = supabase_service.get_live_session(session_id, user_id=user_id)
+    return {
+        "message": "Session processed.",
+        "final_meeting_id": sess_updated.get("final_meeting_id") if sess_updated else None,
+    }
 
 
 # ============================================================

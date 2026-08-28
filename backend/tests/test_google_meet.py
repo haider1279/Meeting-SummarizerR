@@ -147,6 +147,45 @@ class TestGoogleMeetAndGeminiSTT(unittest.TestCase):
         self.assertNotIn("/api/live-zoom/active", openapi_paths)
         self.assertNotIn("/api/live-zoom/session", openapi_paths)
 
+    @patch("app.services.supabase_service.create_meeting")
+    @patch("app.services.supabase_service.update_meeting_results")
+    @patch("app.services.supabase_service.create_action_items")
+    @patch("app.services.supabase_service.update_live_session")
+    @patch("app.services.gemini_service.analyze_meeting_transcript")
+    def test_finalize_live_meeting(
+        self, mock_analyze, mock_update_live, mock_create_actions, mock_update_results, mock_create_meeting
+    ):
+        mock_create_meeting.return_value = {"id": "final-meet-uuid-123"}
+        mock_analyze.return_value = (
+            "Clean transcript text.",
+            {
+                "summary": "Final consolidated summary.",
+                "key_points": ["Point A"],
+                "decisions": ["Decision B"],
+                "action_items": [{"task": "Task C", "assignee": "Alex", "deadline": "Tomorrow", "priority": "High"}],
+                "unresolved_issues": [],
+                "important_topics": ["Topic 1"],
+            },
+        )
+
+        runtime = live_session_service.LiveSessionRuntime(
+            session_id="test-session-final",
+            user_id="test-user-final",
+            title="Google Meet Live Sync",
+        )
+        runtime.full_transcript_chunks = [
+            {"speaker_name": "Speaker", "text": "Hello, this is a live test."}
+        ]
+
+        async def run_final():
+            res_id = await live_session_service.finalize_live_meeting(runtime)
+            self.assertEqual(res_id, "final-meet-uuid-123")
+            self.assertEqual(runtime.status, "completed")
+            mock_create_meeting.assert_called_once()
+            mock_update_results.assert_called_once()
+
+        asyncio.run(run_final())
+
 
 if __name__ == "__main__":
     unittest.main()
